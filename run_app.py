@@ -29,10 +29,10 @@ def _resources_endpoint() -> str:
     return "https://" + "plex.tv" + "/api/resources"
 
 
-def _load_resource_devices(token: str):
+def _load_resource_devices(account_token: str):
     response = requests.get(
         _resources_endpoint(),
-        headers={"Accept": "application/xml", _token_header_name(): token.strip()},
+        headers={"Accept": "application/xml", _token_header_name(): account_token.strip()},
         params={"includeHttps": "1", "includeRelay": "1", "includeIPv6": "1"},
         timeout=12,
     )
@@ -40,9 +40,9 @@ def _load_resource_devices(token: str):
     return list(ET.fromstring(response.content).findall("Device"))
 
 
-def _server_devices(token: str):
+def _server_devices(account_token: str):
     devices = []
-    for device in _load_resource_devices(token):
+    for device in _load_resource_devices(account_token):
         name = (device.get("name") or "").strip()
         provides = (device.get("provides") or "").lower()
         product = (device.get("product") or "").lower()
@@ -51,8 +51,8 @@ def _server_devices(token: str):
     return devices
 
 
-def _fast_server_names(token: str) -> list[str]:
-    return sorted({(d.get("name") or "").strip() for d in _server_devices(token) if d.get("name")}, key=str.lower)
+def _fast_server_names(account_token: str) -> list[str]:
+    return sorted({(d.get("name") or "").strip() for d in _server_devices(account_token) if d.get("name")}, key=str.lower)
 
 
 def _connection_uris(device) -> list[str]:
@@ -77,53 +77,59 @@ def _connection_uris(device) -> list[str]:
     return [uri for _score, uri in sorted(ranked, key=lambda item: item[0])]
 
 
-def _pick_base_url(token: str, server_name: str) -> str:
+def _server_token(device, account_token: str) -> str:
+    value = (device.get("accessToken") or "").strip()
+    return value or account_token.strip()
+
+
+def _pick_connection(account_token: str, server_name: str) -> tuple[str, str]:
     wanted = server_name.strip().lower()
-    matches = [d for d in _server_devices(token) if (d.get("name") or "").strip().lower() == wanted]
+    matches = [d for d in _server_devices(account_token) if (d.get("name") or "").strip().lower() == wanted]
     if not matches:
-        names = ", ".join(_fast_server_names(token))
+        names = ", ".join(_fast_server_names(account_token))
         raise RuntimeError(f"Server non trovato: {server_name}. Disponibili: {names}")
 
     last_error = None
     for device in matches:
+        server_token = _server_token(device, account_token)
         for uri in _connection_uris(device):
             try:
                 response = requests.get(
                     uri + "/library/sections",
-                    params={_token_header_name(): token.strip()},
+                    headers={_token_header_name(): server_token},
                     timeout=7,
                     verify=False,
                 )
                 if response.status_code == 200:
-                    return uri
+                    return uri, server_token
                 last_error = RuntimeError(f"{uri}: HTTP {response.status_code}")
             except Exception as exc:
                 last_error = exc
     raise RuntimeError(f"Nessuna connessione raggiungibile per {server_name}: {last_error}")
 
 
-def _plex_server(base_url: str, token: str):
+def _plex_server(base_url: str, server_token: str):
     session = requests.Session()
     session.verify = False
     try:
-        return PlexServer(base_url, token.strip(), session=session, timeout=10)
+        return PlexServer(base_url, server_token.strip(), session=session, timeout=10)
     except TypeError:
-        return PlexServer(base_url, token.strip(), session=session)
+        return PlexServer(base_url, server_token.strip(), session=session)
 
 
-def _connect_main_fast(token: str, server_name: str):
-    base_url = _pick_base_url(token, server_name)
-    return _plex_server(base_url, token)
+def _connect_main_fast(account_token: str, server_name: str):
+    base_url, server_token = _pick_connection(account_token, server_name)
+    return _plex_server(base_url, server_token)
 
 
-def _connect_resource_fast(token: str, server_name: str):
-    base_url = _pick_base_url(token, server_name)
+def _connect_resource_fast(account_token: str, server_name: str):
+    base_url, server_token = _pick_connection(account_token, server_name)
     resource = SimpleNamespace(connections=[SimpleNamespace(uri=base_url)])
-    return resource, _plex_server(base_url, token)
+    return resource, _plex_server(base_url, server_token)
 
 
-def _fast_libraries(token: str, server_name: str):
-    plex = _connect_main_fast(token, server_name)
+def _fast_libraries(account_token: str, server_name: str):
+    plex = _connect_main_fast(account_token, server_name)
     out = []
     for sec in plex.library.sections():
         sec_type = str(getattr(sec, "type", "") or "")

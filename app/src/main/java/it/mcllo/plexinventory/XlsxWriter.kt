@@ -2,6 +2,7 @@ package it.mcllo.plexinventory
 
 import java.io.File
 import java.io.OutputStream
+import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -76,6 +77,13 @@ object XlsxWriter {
 
     private fun sheet(headers: List<String>, rows: List<List<String>>): String {
         val all = listOf(headers) + rows
+        val numericHeaders = setOf(
+            "season", "episode", "year", "duration_s", "bitrate_mbps_total", "bitrate_mbps_video",
+            "audio_it_bitrate_mbps", "audio_en_bitrate_mbps", "size_gib", "imdb_rating", "tmdb_id",
+            "rating_key", "bitrate_mbps_video_est", "bitrate_mbps_video_final",
+            "audio_bitrate_total_mbps_raw", "secondary_video_mbps_raw", "container_overhead_mbps_raw",
+            "audio_bitrate_total_mbps", "secondary_video_mbps", "container_overhead_mbps"
+        )
         return buildString {
             append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
             append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>")
@@ -84,10 +92,18 @@ object XlsxWriter {
                 append("<row r=\"").append(rowNum).append("\">")
                 row.forEachIndexed { cIdx, value ->
                     val ref = col(cIdx) + rowNum
+                    val header = headers.getOrNull(cIdx).orEmpty()
                     val style = if (rIdx == 0) " s=\"1\"" else ""
-                    append("<c r=\"").append(ref).append("\" t=\"inlineStr\"").append(style).append("><is><t>")
-                    append(escape(value))
-                    append("</t></is></c>")
+                    val number = if (rIdx > 0 && header in numericHeaders) value.toDoubleOrNull() else null
+                    if (number != null) {
+                        append("<c r=\"").append(ref).append("\"").append(style).append("><v>")
+                        append(String.format(Locale.US, "%s", number))
+                        append("</v></c>")
+                    } else {
+                        append("<c r=\"").append(ref).append("\" t=\"inlineStr\"").append(style).append("><is><t>")
+                        append(escape(value))
+                        append("</t></is></c>")
+                    }
                 }
                 append("</row>")
             }

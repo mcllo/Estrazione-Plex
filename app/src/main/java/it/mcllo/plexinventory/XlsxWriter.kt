@@ -1,6 +1,5 @@
 package it.mcllo.plexinventory
 
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream

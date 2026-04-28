@@ -203,7 +203,7 @@ class PlexClient {
                 "Stream" -> streams += StreamInfo(p.attrs())
                 "Part" -> {
                     val part = p.attrs()
-                    val durationMs = (part["duration"] ?: media["duration"] ?: meta["duration"]).toLongOrNull()
+                    val durationMs = (part["duration"] ?: media["duration"] ?: meta["duration"] ?: "").toLongOrNull()
                     val durationS = durationMs?.div(1000L)
                     val container = part["container"].orEmpty().ifBlank { media["container"].orEmpty() }
                     if (options.skipShortClips && durationS != null && durationS < options.clipMinSeconds && container.lowercase() in setOf("ts", "m2ts", "m2t", "mpegts")) return@parse
@@ -238,7 +238,7 @@ class PlexClient {
         val sizeGiB = part["size"]?.toDoubleOrNull()?.div(1024.0 * 1024.0 * 1024.0)
         val file = part["file"].orEmpty()
         val overhead = estimateOverhead(media["container"].orEmpty(), audios.size, streams.count { it.type == 3 })
-        val videoEst = listOfNotNull(totalMbps, audioTotal, overhead).takeIf { totalMbps != null }?.let { totalMbps!! - (audioTotal ?: 0.0) - overhead }
+        val videoEst = if (totalMbps != null) totalMbps - (audioTotal ?: 0.0) - overhead else null
         val videoFinal = videoMbps ?: videoEst
         val season = meta["parentIndex"].orEmpty().ifBlank { item.parentIndex }
         val episode = meta["index"].orEmpty().ifBlank { item.index }
@@ -301,7 +301,7 @@ class PlexClient {
     }
 
     private fun detectHdr(media: Map<String, String>, video: StreamInfo?, file: String): String {
-        val text = (media.values.joinToString(" ") + " " + video?.hdrText + " " + file).lowercase()
+        val text = (media.values.joinToString(" ") + " " + video?.hdrText.orEmpty() + " " + file).lowercase()
         return when {
             "dolby vision" in text || "dovi" in text || " dv " in " $text " -> "DV"
             "hdr10+" in text -> "HDR10+"

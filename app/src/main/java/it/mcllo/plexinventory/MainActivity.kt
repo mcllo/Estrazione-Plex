@@ -38,6 +38,17 @@ fun PlexInventoryApp() {
     var rows by remember { mutableStateOf<List<InventoryRow>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
     var log by remember { mutableStateOf("Pronto") }
+    var profile by remember { mutableStateOf(OutputProfile.SLIM_BUDGET) }
+    var durationMode by remember { mutableStateOf(DurationMode.HMS) }
+    var writeCsv by remember { mutableStateOf(true) }
+    var writeXlsx by remember { mutableStateOf(true) }
+    var topNMovies by remember { mutableStateOf("5") }
+    var topNShows by remember { mutableStateOf("1") }
+    var skipShortClips by remember { mutableStateOf(true) }
+    var clipMinSeconds by remember { mutableStateOf("300") }
+    var progress by remember { mutableStateOf("") }
+
+    fun headers() = client.columns(profile, durationMode)
 
     MaterialTheme {
         Surface(Modifier.fillMaxSize()) {
@@ -48,6 +59,7 @@ fun PlexInventoryApp() {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text("Plex Inventory Android", style = MaterialTheme.typography.headlineSmall)
+
                 OutlinedTextField(
                     value = token,
                     onValueChange = { token = it },
@@ -55,6 +67,7 @@ fun PlexInventoryApp() {
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(enabled = token.isNotBlank() && !busy, onClick = {
                         scope.launch {
@@ -84,7 +97,10 @@ fun PlexInventoryApp() {
                     }) { Text("Carica librerie") }
                 }
 
-                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (busy) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    if (progress.isNotBlank()) Text(progress)
+                }
 
                 if (servers.isNotEmpty()) {
                     Text("Server", style = MaterialTheme.typography.titleMedium)
@@ -107,12 +123,45 @@ fun PlexInventoryApp() {
                             })
                         }
                     }
+
+                    Text("Opzioni", style = MaterialTheme.typography.titleMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = profile == OutputProfile.SLIM_BUDGET, onClick = { profile = OutputProfile.SLIM_BUDGET }, label = { Text("SLIM") })
+                        FilterChip(selected = profile == OutputProfile.FULL, onClick = { profile = OutputProfile.FULL }, label = { Text("FULL") })
+                        FilterChip(selected = durationMode == DurationMode.BOTH, onClick = { durationMode = if (durationMode == DurationMode.BOTH) DurationMode.HMS else DurationMode.BOTH }, label = { Text("Durata BOTH") })
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = writeCsv, onClick = { writeCsv = !writeCsv }, label = { Text("CSV") })
+                        FilterChip(selected = writeXlsx, onClick = { writeXlsx = !writeXlsx }, label = { Text("XLSX") })
+                        FilterChip(selected = skipShortClips, onClick = { skipShortClips = !skipShortClips }, label = { Text("Salta clip brevi") })
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(topNMovies, { topNMovies = it }, label = { Text("TOP_N_MOVIES") }, modifier = Modifier.weight(1f), singleLine = true)
+                        OutlinedTextField(topNShows, { topNShows = it }, label = { Text("TOP_N_SHOWS") }, modifier = Modifier.weight(1f), singleLine = true)
+                        OutlinedTextField(clipMinSeconds, { clipMinSeconds = it }, label = { Text("Clip s") }, modifier = Modifier.weight(1f), singleLine = true)
+                    }
+
                     Button(enabled = !busy && selectedLibraries.isNotEmpty(), onClick = {
                         scope.launch {
                             busy = true
-                            log = "Genero inventario base..."
+                            log = "Genero inventario..."
+                            progress = ""
                             val chosen = libraries.filter { it.key in selectedLibraries }
-                            runCatching { withContext(Dispatchers.IO) { client.inventory(baseUrl, selectedServer!!.accessToken ?: token, chosen) } }
+                            val options = InventoryOptions(
+                                profile = profile,
+                                durationMode = durationMode,
+                                topNMovies = topNMovies.toIntOrNull() ?: 0,
+                                topNShows = topNShows.toIntOrNull() ?: 0,
+                                skipShortClips = skipShortClips,
+                                clipMinSeconds = clipMinSeconds.toIntOrNull() ?: 300,
+                            )
+                            runCatching {
+                                withContext(Dispatchers.IO) {
+                                    client.inventory(baseUrl, selectedServer!!.accessToken ?: token, chosen, options) { done, total, label ->
+                                        progress = "$done/$total $label"
+                                    }
+                                }
+                            }
                                 .onSuccess { rows = it; log = "Righe create: ${it.size}" }
                                 .onFailure { log = it.stackTraceToString() }
                             busy = false
@@ -121,12 +170,22 @@ fun PlexInventoryApp() {
                 }
 
                 if (rows.isNotEmpty()) {
-                    Button(onClick = {
-                        val file = File(ctx.getExternalFilesDir(null), "plex_inventory_android.csv")
-                        file.writeText(client.toCsv(rows))
-                        log = "CSV salvato: ${file.absolutePath}"
-                    }) { Text("Salva CSV") }
-                    Text("Anteprima: ${rows.take(5).joinToString("\n") { it.title + " - " + it.resolution }}")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(enabled = writeCsv, onClick = {
+                            val file = File(ctx.getExternalFilesDir(null), "plex_inventory_android.csv")
+                            file.writeText(client.toCsv(rows, headers()))
+                            log = "CSV salvato: ${file.absolutePath}"
+                        }) { Text("Salva CSV") }
+                        Button(enabled = writeXlsx, onClick = {
+                            val file = File(ctx.getExternalFilesDir(null), "plex_inventory_android.xlsx")
+                            XlsxWriter.write(file, headers(), client.xlsxRows(rows, headers()))
+                            log = "XLSX salvato: ${file.absolutePath}"
+                        }) { Text("Salva XLSX") }
+                    }
+                    Text("Anteprima")
+                    Text(rows.take(8).joinToString("\n") { r ->
+                        listOf(r.get("title_or_series"), r.get("resolution"), r.get("hdr"), r.get("bitrate_mbps_total"), r.get("size_gib")).filter { it.isNotBlank() }.joinToString(" | ")
+                    })
                 }
 
                 Text("Log", style = MaterialTheme.typography.titleMedium)

@@ -45,7 +45,7 @@ class PlexClient {
         val url = "https://plex.tv/api/resources?includeHttps=1&includeRelay=1&X-Plex-Token=${enc(token)}"
         val xml = get(url)
         val out = mutableListOf<PlexServerRef>()
-        parse(xml) { p ->
+        parseStarts(xml) { p ->
             if (p.name == "Device") {
                 val provides = p.attr("provides").lowercase()
                 val product = p.attr("product").lowercase()
@@ -71,7 +71,7 @@ class PlexClient {
         val base = firstWorkingBase(server, accountToken)
         val xml = get("$base/library/sections?X-Plex-Token=${enc(server.accessToken ?: accountToken)}")
         val libs = mutableListOf<PlexLibraryRef>()
-        parse(xml) { p ->
+        parseStarts(xml) { p ->
             if (p.name == "Directory") {
                 val type = p.attr("type")
                 if (type == "movie" || type == "show") libs += PlexLibraryRef(p.attr("title"), type, p.attr("key"))
@@ -102,9 +102,12 @@ class PlexClient {
         val rows = mutableListOf<InventoryRow>()
         jobs.forEachIndexed { idx, (lib, item) ->
             onProgress(idx, jobs.size, item.title)
-            val detail = runCatching {
-                get("$base/library/metadata/${item.ratingKey}?includeAllStreams=1&includeGuids=1&X-Plex-Token=${enc(token)}")
-            }.getOrDefault("")
+            val path = if (lib.type == "show") {
+                "$base/library/metadata/${item.ratingKey}/allLeaves?includeAllStreams=1&includeGuids=1&X-Plex-Token=${enc(token)}"
+            } else {
+                "$base/library/metadata/${item.ratingKey}?includeAllStreams=1&includeGuids=1&X-Plex-Token=${enc(token)}"
+            }
+            val detail = runCatching { get(path) }.getOrDefault("")
             rows += parseDetail(detail, item, lib.type, options)
         }
         onProgress(jobs.size, jobs.size, "Completato")
@@ -162,9 +165,15 @@ class PlexClient {
         val hdrText = attrs.values.joinToString(" ").lowercase()
     }
 
+    private data class PartBundle(
+        val media: Map<String, String>,
+        val part: Map<String, String>,
+        val streams: List<StreamInfo>,
+    )
+
     private fun parseItems(xml: String, type: String): List<Item> {
         val out = mutableListOf<Item>()
-        parse(xml) { p ->
+        parseStarts(xml) { p ->
             val tag = if (type == "show") "Directory" else "Video"
             if (p.name == tag) out += Item(
                 ratingKey = p.attr("ratingKey"),
@@ -181,36 +190,70 @@ class PlexClient {
     }
 
     private fun parseDetail(xml: String, item: Item, libType: String, options: InventoryOptions): List<InventoryRow> {
+        if (xml.isBlank()) return emptyList()
         val out = mutableListOf<InventoryRow>()
+        val parser = XmlPullParserFactory.newInstance().newPullParser()
+        parser.setInput(StringReader(xml))
+
         var meta = mapOf<String, String>()
         var media = mapOf<String, String>()
-        val streams = mutableListOf<StreamInfo>()
+        var currentPart: Map<String, String>? = null
+        val currentStreams = mutableListOf<StreamInfo>()
+        val parts = mutableListOf<PartBundle>()
         val guids = mutableMapOf<String, String>()
         val genres = linkedSetOf<String>()
         var imdbRating = ""
 
-        parse(xml) { p ->
-            when (p.name) {
-                "Video", "Directory" -> if (p.attr("ratingKey") == item.ratingKey || meta.isEmpty()) meta = p.attrs()
-                "Guid" -> {
-                    val id = p.attr("id")
-                    if (id.startsWith("imdb://")) guids["imdb_id"] = id.removePrefix("imdb://")
-                    if (id.startsWith("tmdb://")) guids["tmdb_id"] = id.removePrefix("tmdb://")
+        fun flushVideo() {
+            if (parts.isEmpty()) return
+            for (bundle in parts) {
+                val durationMs = (bundle.part["duration"] ?: bundle.media["duration"] ?: meta["duration"] ?: "").toLongOrNull()
+                val durationS = durationMs?.div(1000L)
+                val container = bundle.part["container"].orEmpty().ifBlank { bundle.media["container"].orEmpty() }
+                if (options.skipShortClips && durationS != null && durationS < options.clipMinSeconds && container.lowercase() in setOf("ts", "m2ts", "m2t", "mpegts")) continue
+                out += buildRow(item, libType, meta, bundle.media, bundle.part, bundle.streams, guids, genres, imdbRating, durationS)
+            }
+        }
+
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            when (event) {
+                XmlPullParser.START_TAG -> when (parser.name) {
+                    "Video" -> {
+                        meta = parser.attrs()
+                        media = emptyMap()
+                        currentPart = null
+                        currentStreams.clear()
+                        parts.clear()
+                        guids.clear()
+                        genres.clear()
+                        imdbRating = ""
+                    }
+                    "Media" -> media = parser.attrs()
+                    "Part" -> {
+                        currentPart = parser.attrs()
+                        currentStreams.clear()
+                    }
+                    "Stream" -> if (currentPart != null) currentStreams += StreamInfo(parser.attrs())
+                    "Guid" -> {
+                        val id = parser.attr("id")
+                        if (id.startsWith("imdb://")) guids["imdb_id"] = id.removePrefix("imdb://")
+                        if (id.startsWith("tmdb://")) guids["tmdb_id"] = id.removePrefix("tmdb://")
+                    }
+                    "Rating" -> if ("imdb" in parser.attr("image").lowercase()) imdbRating = parser.attr("value")
+                    "Genre" -> parser.attr("tag").ifBlank { parser.attr("title") }.takeIf { it.isNotBlank() }?.let(genres::add)
                 }
-                "Rating" -> if ("imdb" in p.attr("image").lowercase()) imdbRating = p.attr("value")
-                "Genre" -> p.attr("tag").ifBlank { p.attr("title") }.takeIf { it.isNotBlank() }?.let(genres::add)
-                "Media" -> media = p.attrs()
-                "Stream" -> streams += StreamInfo(p.attrs())
-                "Part" -> {
-                    val part = p.attrs()
-                    val durationMs = (part["duration"] ?: media["duration"] ?: meta["duration"] ?: "").toLongOrNull()
-                    val durationS = durationMs?.div(1000L)
-                    val container = part["container"].orEmpty().ifBlank { media["container"].orEmpty() }
-                    if (options.skipShortClips && durationS != null && durationS < options.clipMinSeconds && container.lowercase() in setOf("ts", "m2ts", "m2t", "mpegts")) return@parse
-                    out += buildRow(item, libType, meta, media, part, streams.toList(), guids, genres, imdbRating, durationS, options)
-                    streams.clear()
+                XmlPullParser.END_TAG -> when (parser.name) {
+                    "Part" -> {
+                        val partAttrs = currentPart
+                        if (partAttrs != null) parts += PartBundle(media, partAttrs, currentStreams.toList())
+                        currentPart = null
+                        currentStreams.clear()
+                    }
+                    "Video" -> flushVideo()
                 }
             }
+            event = parser.next()
         }
         return out
     }
@@ -226,7 +269,6 @@ class PlexClient {
         genres: Set<String>,
         imdbRating: String,
         durationS: Long?,
-        options: InventoryOptions,
     ): InventoryRow {
         val video = streams.firstOrNull { it.type == 1 }
         val audios = streams.filter { it.type == 2 }
@@ -243,13 +285,14 @@ class PlexClient {
         val season = meta["parentIndex"].orEmpty().ifBlank { item.parentIndex }
         val episode = meta["index"].orEmpty().ifBlank { item.index }
         val isMovie = libType == "movie"
+        val itemTitle = meta["title"].orEmpty().ifBlank { item.title }
 
         val values = linkedMapOf<String, String>()
         values["type"] = if (isMovie) "Movie" else "TV"
-        values["title_or_series"] = if (isMovie) item.title else meta["grandparentTitle"].orEmpty().ifBlank { item.grandparentTitle.ifBlank { item.title } }
+        values["title_or_series"] = if (isMovie) itemTitle else meta["grandparentTitle"].orEmpty().ifBlank { item.grandparentTitle.ifBlank { item.title } }
         values["season"] = if (isMovie) "" else season
         values["episode"] = if (isMovie) "" else episode
-        values["episode_title"] = if (isMovie) "" else meta["title"].orEmpty().ifBlank { item.episodeTitle }
+        values["episode_title"] = if (isMovie) "" else itemTitle
         values["year"] = meta["year"].orEmpty().ifBlank { item.year }
         values["added_at_milan"] = formatAdded(meta["addedAt"].orEmpty().ifBlank { item.addedAt })
         values["resolution"] = normResolution(media["videoResolution"].orEmpty())
@@ -344,7 +387,7 @@ class PlexClient {
         }
     }
 
-    private fun parse(xml: String, onStart: (XmlPullParser) -> Unit) {
+    private fun parseStarts(xml: String, onStart: (XmlPullParser) -> Unit) {
         if (xml.isBlank()) return
         val parser = XmlPullParserFactory.newInstance().newPullParser()
         parser.setInput(StringReader(xml))

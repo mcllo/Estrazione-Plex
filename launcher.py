@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QMessageBox
 
 import plex_inventory_app.app as app_mod
 import plex_inventory_app.core as core_mod
+from plex_inventory_app.debug_wide_patch import apply as apply_debug_wide_patch
 
 _original_init = app_mod.MainWindow.__init__
 
@@ -153,6 +154,7 @@ def _connect_main_colab_plus(token: str, server_name: str):
 
 core_mod._connect_resource = _connect_resource_colab_plus
 core_mod._connect_main = _connect_main_colab_plus
+apply_debug_wide_patch(core_mod)
 
 
 def _init_with_worker_refs(self):

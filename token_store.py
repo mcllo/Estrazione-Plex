@@ -1,0 +1,49 @@
+name: Build Windows portable
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - "plex_inventory_app/**"
+      - "run_app.py"
+      - "requirements.txt"
+      - "PlexInventory.spec"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: pyinstaller --clean --noconfirm PlexInventory.spec
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          if (Test-Path PlexInventory-windows-portable.zip) {
+            Remove-Item PlexInventory-windows-portable.zip
+          }
+          Compress-Archive -Path dist\PlexInventory\* -DestinationPath PlexInventory-windows-portable.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlexInventory-windows-portable
+          path: PlexInventory-windows-portable.zip
+          retention-days: 14

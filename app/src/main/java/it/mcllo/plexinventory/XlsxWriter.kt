@@ -1,6 +1,7 @@
 package it.mcllo.plexinventory
 
 import java.io.File
+import java.io.OutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -8,14 +9,18 @@ object XlsxWriter {
     fun write(file: File, headers: List<String>, rows: List<List<String>>) {
         file.parentFile?.mkdirs()
         file.outputStream().use { out ->
-            ZipOutputStream(out).use { zip ->
-                zip.text("[Content_Types].xml", contentTypes())
-                zip.text("_rels/.rels", rootRels())
-                zip.text("xl/workbook.xml", workbook())
-                zip.text("xl/_rels/workbook.xml.rels", workbookRels())
-                zip.text("xl/styles.xml", styles())
-                zip.text("xl/worksheets/sheet1.xml", sheet(headers, rows))
-            }
+            write(out, headers, rows)
+        }
+    }
+
+    fun write(outputStream: OutputStream, headers: List<String>, rows: List<List<String>>) {
+        ZipOutputStream(outputStream).use { zip ->
+            zip.text("[Content_Types].xml", contentTypes())
+            zip.text("_rels/.rels", rootRels())
+            zip.text("xl/workbook.xml", workbook())
+            zip.text("xl/_rels/workbook.xml.rels", workbookRels())
+            zip.text("xl/styles.xml", styles())
+            zip.text("xl/worksheets/sheet1.xml", sheet(headers, rows))
         }
     }
 

@@ -1,0 +1,5 @@
+plexapi>=4.15.0
+pandas>=2.2.0
+openpyxl>=3.1.2
+PySide6>=6.7.0
+pyinstaller>=6.6.0

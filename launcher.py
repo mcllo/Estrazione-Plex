@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import requests
 from plexapi.myplex import MyPlexAccount
@@ -35,21 +36,20 @@ def _connection_uri(conn: Any) -> str:
 
 
 def _connection_score(conn: Any) -> tuple[int, str]:
-    # Colab runs outside the LAN, so it normally uses a remote/relay route.
-    # On Windows a local plex.direct route can be chosen first and fail.
-    # Prefer remote non-relay, then relay, then local as last resort.
     uri = _connection_uri(conn)
     local = _safe_bool(getattr(conn, "local", False))
     relay = _safe_bool(getattr(conn, "relay", False))
     protocol = str(getattr(conn, "protocol", "") or "").lower()
     score = 0
+    # On this Windows network FortiGuard blocks plex.direct remote/relay URLs.
+    # Try LAN routes before remote routes.
     if local:
-        score += 100
+        score -= 100
     if relay:
-        score += 30
-    if protocol == "https":
-        score -= 5
+        score += 50
     if protocol == "http":
+        score -= 5
+    if protocol == "https":
         score -= 2
     return score, uri
 
@@ -63,6 +63,39 @@ def _token_candidates(resource: Any, account_token: str) -> list[str]:
     if account_token.strip() not in tokens:
         tokens.append(account_token.strip())
     return tokens
+
+
+def _local_ip_from_plex_direct(uri: str) -> str | None:
+    try:
+        parsed = urlparse(uri)
+        host = parsed.hostname or ""
+        first = host.split(".", 1)[0]
+        parts = first.split("-")
+        if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            return ".".join(parts)
+    except Exception:
+        return None
+    return None
+
+
+def _candidate_uris(conn: Any) -> list[str]:
+    uri = _connection_uri(conn)
+    local = _safe_bool(getattr(conn, "local", False))
+    out: list[str] = []
+    if local:
+        ip = _local_ip_from_plex_direct(uri)
+        port = urlparse(uri).port or 32400
+        if ip:
+            # Plex on LAN normally accepts this even when plex.direct certificate/DNS is problematic.
+            out.append(f"http://{ip}:{port}")
+            out.append(f"https://{ip}:{port}")
+    if uri:
+        out.append(uri)
+    deduped: list[str] = []
+    for item in out:
+        if item and item not in deduped:
+            deduped.append(item)
+    return deduped
 
 
 def _make_plex(base_url: str, token: str) -> PlexServer:
@@ -87,28 +120,27 @@ def _connect_resource_colab_plus(token: str, server_name: str):
     except Exception as exc:
         attempts.append("resource.connect: " + _redact(repr(exc), account_token))
 
-    # 2) Fallback inspired by the script's BASEURL reuse, but try every Plex URL.
+    # 2) Windows fallback: try all reported connections, plus raw LAN IPs derived from plex.direct.
     conns = list(getattr(resource, "connections", None) or [])
     conns = [c for c in conns if _connection_uri(c)]
     conns = sorted(conns, key=_connection_score)
     tokens = _token_candidates(resource, account_token)
 
     for conn in conns:
-        uri = _connection_uri(conn)
         local = _safe_bool(getattr(conn, "local", False))
         relay = _safe_bool(getattr(conn, "relay", False))
-        for candidate in tokens:
-            try:
-                plex = _make_plex(uri, candidate)
-                # Force a tiny authenticated call so we only accept a usable server.
-                plex.library.sections()
-                attempts.append(f"OK: {uri} local={local} relay={relay}")
-                return resource, plex
-            except Exception as exc:
-                msg = _redact(repr(exc), candidate)
-                attempts.append(f"FAIL: {uri} local={local} relay={relay}: {msg}")
+        for uri in _candidate_uris(conn):
+            for candidate in tokens:
+                try:
+                    plex = _make_plex(uri, candidate)
+                    plex.library.sections()
+                    attempts.append(f"OK: {uri} local={local} relay={relay}")
+                    return resource, plex
+                except Exception as exc:
+                    msg = _redact(repr(exc), candidate)
+                    attempts.append(f"FAIL: {uri} local={local} relay={relay}: {msg}")
 
-    preview = "\n".join(attempts[-12:])
+    preview = "\n".join(attempts[-18:])
     raise RuntimeError(
         "Impossibile connettersi al server Plex. Tentativi effettuati:\n" + preview
     )

@@ -6,7 +6,7 @@ pyside6_datas, pyside6_binaries, pyside6_hiddenimports = collect_all('PySide6')
 block_cipher = None
 
 a = Analysis(
-    ['run_app.py'],
+    ['launcher.py'],
     pathex=[],
     binaries=pyside6_binaries,
     datas=pyside6_datas,

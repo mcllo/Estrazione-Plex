@@ -15,6 +15,11 @@ import plex_inventory_app.core as core_mod
 
 _original_init = app_mod.MainWindow.__init__
 
+try:
+    requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
+except Exception:
+    pass
+
 
 def _token_header_name() -> str:
     return "X-" + "Plex-" + "Token"
@@ -61,9 +66,11 @@ def _connection_uris(device) -> list[str]:
         protocol = (conn.get("protocol") or "").lower()
         score = 0
         if local:
-            score -= 30
+            score -= 40
+        if protocol == "http":
+            score -= 20
         if protocol == "https":
-            score -= 10
+            score -= 5
         if relay:
             score += 50
         ranked.append((score, uri))
@@ -85,6 +92,7 @@ def _pick_base_url(token: str, server_name: str) -> str:
                     uri + "/library/sections",
                     params={_token_header_name(): token.strip()},
                     timeout=7,
+                    verify=False,
                 )
                 if response.status_code == 200:
                     return uri
@@ -94,15 +102,24 @@ def _pick_base_url(token: str, server_name: str) -> str:
     raise RuntimeError(f"Nessuna connessione raggiungibile per {server_name}: {last_error}")
 
 
+def _plex_server(base_url: str, token: str):
+    session = requests.Session()
+    session.verify = False
+    try:
+        return PlexServer(base_url, token.strip(), session=session, timeout=10)
+    except TypeError:
+        return PlexServer(base_url, token.strip(), session=session)
+
+
 def _connect_main_fast(token: str, server_name: str):
     base_url = _pick_base_url(token, server_name)
-    return PlexServer(base_url, token.strip(), timeout=10)
+    return _plex_server(base_url, token)
 
 
 def _connect_resource_fast(token: str, server_name: str):
     base_url = _pick_base_url(token, server_name)
     resource = SimpleNamespace(connections=[SimpleNamespace(uri=base_url)])
-    return resource, PlexServer(base_url, token.strip(), timeout=10)
+    return resource, _plex_server(base_url, token)
 
 
 def _fast_libraries(token: str, server_name: str):

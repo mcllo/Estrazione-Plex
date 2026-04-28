@@ -23,6 +23,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlexInventoryApp() {
     val client = remember { PlexClient() }
@@ -136,9 +137,9 @@ fun PlexInventoryApp() {
                         FilterChip(selected = skipShortClips, onClick = { skipShortClips = !skipShortClips }, label = { Text("Salta clip brevi") })
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(topNMovies, { topNMovies = it }, label = { Text("TOP_N_MOVIES") }, modifier = Modifier.weight(1f), singleLine = true)
-                        OutlinedTextField(topNShows, { topNShows = it }, label = { Text("TOP_N_SHOWS") }, modifier = Modifier.weight(1f), singleLine = true)
-                        OutlinedTextField(clipMinSeconds, { clipMinSeconds = it }, label = { Text("Clip s") }, modifier = Modifier.weight(1f), singleLine = true)
+                        OutlinedTextField(value = topNMovies, onValueChange = { topNMovies = it }, label = { Text("TOP_N_MOVIES") }, modifier = Modifier.weight(1f), singleLine = true)
+                        OutlinedTextField(value = topNShows, onValueChange = { topNShows = it }, label = { Text("TOP_N_SHOWS") }, modifier = Modifier.weight(1f), singleLine = true)
+                        OutlinedTextField(value = clipMinSeconds, onValueChange = { clipMinSeconds = it }, label = { Text("Clip s") }, modifier = Modifier.weight(1f), singleLine = true)
                     }
 
                     Button(enabled = !busy && selectedLibraries.isNotEmpty(), onClick = {
@@ -158,7 +159,7 @@ fun PlexInventoryApp() {
                             runCatching {
                                 withContext(Dispatchers.IO) {
                                     client.inventory(baseUrl, selectedServer!!.accessToken ?: token, chosen, options) { done, total, label ->
-                                        progress = "$done/$total $label"
+                                        scope.launch { progress = "$done/$total $label" }
                                     }
                                 }
                             }

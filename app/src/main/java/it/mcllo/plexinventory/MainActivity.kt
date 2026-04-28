@@ -1,8 +1,11 @@
 package it.mcllo.plexinventory
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,7 +17,6 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,6 +52,40 @@ fun PlexInventoryApp() {
     var progress by remember { mutableStateOf("") }
 
     fun headers() = client.columns(profile, durationMode)
+
+    fun writeCsvTo(uri: Uri) {
+        runCatching {
+            ctx.contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(client.toCsv(rows, headers()).toByteArray(Charsets.UTF_8))
+            } ?: error("Impossibile aprire il file CSV scelto")
+        }.onSuccess {
+            log = "CSV salvato nel percorso scelto."
+        }.onFailure {
+            log = it.stackTraceToString()
+        }
+    }
+
+    fun writeXlsxTo(uri: Uri) {
+        runCatching {
+            ctx.contentResolver.openOutputStream(uri)?.use { out ->
+                XlsxWriter.write(out, headers(), client.xlsxRows(rows, headers()))
+            } ?: error("Impossibile aprire il file XLSX scelto")
+        }.onSuccess {
+            log = "XLSX salvato nel percorso scelto."
+        }.onFailure {
+            log = it.stackTraceToString()
+        }
+    }
+
+    val csvPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        if (uri != null) writeCsvTo(uri) else log = "Salvataggio CSV annullato."
+    }
+
+    val xlsxPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    ) { uri ->
+        if (uri != null) writeXlsxTo(uri) else log = "Salvataggio XLSX annullato."
+    }
 
     MaterialTheme {
         Surface(Modifier.fillMaxSize()) {
@@ -173,15 +209,11 @@ fun PlexInventoryApp() {
                 if (rows.isNotEmpty()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(enabled = writeCsv, onClick = {
-                            val file = File(ctx.getExternalFilesDir(null), "plex_inventory_android.csv")
-                            file.writeText(client.toCsv(rows, headers()))
-                            log = "CSV salvato: ${file.absolutePath}"
-                        }) { Text("Salva CSV") }
+                            csvPicker.launch("plex_inventory_android.csv")
+                        }) { Text("Salva CSV...") }
                         Button(enabled = writeXlsx, onClick = {
-                            val file = File(ctx.getExternalFilesDir(null), "plex_inventory_android.xlsx")
-                            XlsxWriter.write(file, headers(), client.xlsxRows(rows, headers()))
-                            log = "XLSX salvato: ${file.absolutePath}"
-                        }) { Text("Salva XLSX") }
+                            xlsxPicker.launch("plex_inventory_android.xlsx")
+                        }) { Text("Salva XLSX...") }
                     }
                     Text("Anteprima")
                     Text(rows.take(8).joinToString("\n") { r ->

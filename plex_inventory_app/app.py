@@ -309,7 +309,6 @@ class MainWindow(QMainWindow):
         )
 
     def _servers_loaded(self, servers: list[str]) -> None:
-        self._set_loading_state(False)
         self.server_combo.clear()
         self.server_combo.addItems(servers)
         if not servers:
@@ -335,7 +334,6 @@ class MainWindow(QMainWindow):
         )
 
     def _libraries_loaded(self, libs: list[dict[str, str]]) -> None:
-        self._set_loading_state(False)
         self.library_list.clear()
         for lib in libs:
             title = lib.get("title", "")

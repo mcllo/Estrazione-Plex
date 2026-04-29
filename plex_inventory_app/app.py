@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 import traceback
 from dataclasses import asdict
 from pathlib import Path
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         self.token_store = TokenStore()
         self._threads: list[QThread] = []
         self.cancel_event = threading.Event()
+        self.inventory_started_at: float | None = None
         self._build_ui()
         self._load_saved_token_labels()
 
@@ -132,9 +134,9 @@ class MainWindow(QMainWindow):
         libs_group = QGroupBox("2. Librerie da includere")
         libs_layout = QVBoxLayout(libs_group)
         self.library_list = QListWidget()
+        self.library_list.setMinimumHeight(230)
         libs_layout.addWidget(QLabel("Se non selezioni librerie, l'app include tutte le librerie Movies/TV disponibili."))
         libs_layout.addWidget(self.library_list)
-        layout.addWidget(libs_group)
 
         options_group = QGroupBox("3. Opzioni script")
         options_layout = QGridLayout(options_group)
@@ -209,7 +211,11 @@ class MainWindow(QMainWindow):
         options_layout.addWidget(QLabel("Cartella output"), 5, 0)
         options_layout.addWidget(self.output_dir, 5, 1, 1, 4)
         options_layout.addWidget(self.browse_btn, 5, 5)
-        layout.addWidget(options_group)
+
+        middle_row = QHBoxLayout()
+        middle_row.addWidget(libs_group, 2)
+        middle_row.addWidget(options_group, 3)
+        layout.addLayout(middle_row, 1)
 
         run_group = QGroupBox("4. Esecuzione")
         run_layout = QVBoxLayout(run_group)
@@ -225,14 +231,17 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status_label = QLabel("Pronto")
+        self.eta_label = QLabel("Tempo: 00:00:00 | ETA residua: calcolo...")
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setLineWrapMode(QTextEdit.NoWrap)
+        self.log_box.setMinimumHeight(280)
         run_layout.addLayout(buttons)
         run_layout.addWidget(self.progress)
         run_layout.addWidget(self.status_label)
+        run_layout.addWidget(self.eta_label)
         run_layout.addWidget(self.log_box, stretch=1)
-        layout.addWidget(run_group, stretch=1)
+        layout.addWidget(run_group, stretch=3)
 
     def _load_saved_token_labels(self) -> None:
         current = self.saved_tokens.currentText()
@@ -375,6 +384,8 @@ class MainWindow(QMainWindow):
             return
         self.cancel_event = threading.Event()
         self.progress.setValue(0)
+        self.inventory_started_at = time.monotonic()
+        self.eta_label.setText("Tempo: 00:00:00 | ETA residua: calcolo...")
         self.log_box.clear()
         self._append_log("Avvio inventario...")
         self._append_log(f"Server: {config.server_name}")
@@ -411,6 +422,15 @@ class MainWindow(QMainWindow):
         else:
             self.progress.setValue(int(done / max(total, 1) * 100))
         self.status_label.setText(msg)
+        elapsed = self._elapsed_seconds()
+        if done <= 0 or total <= 0:
+            self.eta_label.setText(f"Tempo: {self._fmt_duration(elapsed)} | ETA residua: calcolo...")
+            return
+        avg_seconds_per_job = elapsed / max(done, 1)
+        eta_remaining = max(0.0, (total - done) * avg_seconds_per_job)
+        self.eta_label.setText(
+            f"Tempo: {self._fmt_duration(elapsed)} | ETA residua: {self._fmt_duration(eta_remaining)}"
+        )
 
     @Slot(object)
     def _inventory_finished(self, result: Any) -> None:
@@ -418,6 +438,8 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.progress.setValue(100)
         self.status_label.setText("Completato")
+        self.eta_label.setText(f"Completato in {self._fmt_duration(getattr(result, 'elapsed_seconds', self._elapsed_seconds()))}")
+        self.inventory_started_at = None
         paths = []
         if getattr(result, "csv_path", None):
             paths.append(result.csv_path)
@@ -431,6 +453,8 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.status_label.setText("Errore")
+        self.eta_label.setText(f"Tempo: {self._fmt_duration(self._elapsed_seconds())} | ETA residua: --")
+        self.inventory_started_at = None
         self._append_log(tb)
         QMessageBox.critical(self, "Errore", "Inventario fallito. Vedi log.")
 
@@ -458,6 +482,18 @@ class MainWindow(QMainWindow):
     def _append_log(self, text: str) -> None:
         self.log_box.append(text)
         self.log_box.verticalScrollBar().setValue(self.log_box.verticalScrollBar().maximum())
+
+    def _elapsed_seconds(self) -> float:
+        if self.inventory_started_at is None:
+            return 0.0
+        return max(0.0, time.monotonic() - self.inventory_started_at)
+
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        total_seconds = max(0, int(seconds))
+        h, rem = divmod(total_seconds, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 def main() -> int:

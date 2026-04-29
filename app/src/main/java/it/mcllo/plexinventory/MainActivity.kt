@@ -45,8 +45,8 @@ fun PlexInventoryApp() {
     var durationMode by remember { mutableStateOf(DurationMode.HMS) }
     var writeCsv by remember { mutableStateOf(true) }
     var writeXlsx by remember { mutableStateOf(true) }
-    var topNMovies by remember { mutableStateOf("5") }
-    var topNShows by remember { mutableStateOf("1") }
+    var topNMovies by remember { mutableStateOf("0") }
+    var topNShows by remember { mutableStateOf("0") }
     var skipShortClips by remember { mutableStateOf(true) }
     var clipMinSeconds by remember { mutableStateOf("300") }
     var progress by remember { mutableStateOf("") }
@@ -95,7 +95,7 @@ fun PlexInventoryApp() {
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("Plex Inventory Android", style = MaterialTheme.typography.headlineSmall)
+                Text("Estrazione Plex", style = MaterialTheme.typography.headlineSmall)
 
                 OutlinedTextField(
                     value = token,
@@ -163,7 +163,8 @@ fun PlexInventoryApp() {
 
                     Text("Opzioni", style = MaterialTheme.typography.titleMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(selected = profile == OutputProfile.SLIM_BUDGET, onClick = { profile = OutputProfile.SLIM_BUDGET }, label = { Text("SLIM") })
+                        FilterChip(selected = profile == OutputProfile.SLIM_BUDGET, onClick = { profile = OutputProfile.SLIM_BUDGET }, label = { Text("SLIM_BUDGET") })
+                        FilterChip(selected = profile == OutputProfile.SLIM_RAW, onClick = { profile = OutputProfile.SLIM_RAW }, label = { Text("SLIM_RAW") })
                         FilterChip(selected = profile == OutputProfile.FULL, onClick = { profile = OutputProfile.FULL }, label = { Text("FULL") })
                         FilterChip(selected = durationMode == DurationMode.BOTH, onClick = { durationMode = if (durationMode == DurationMode.BOTH) DurationMode.HMS else DurationMode.BOTH }, label = { Text("Durata BOTH") })
                     }

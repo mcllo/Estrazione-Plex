@@ -301,8 +301,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Server", "Inserisci o seleziona un token Plex.")
             return
         self._append_log("Carico server Plex...")
-        self._set_loading_state(True)
-        self._run_background(
+        self._run_loading_background(
             lambda: list_plex_servers(token),
             self._servers_loaded,
             "Caricamento server fallito",
@@ -328,8 +327,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Librerie", "Inserisci token e seleziona un server Plex.")
             return
         self._append_log(f"Carico librerie da {server}...")
-        self._set_loading_state(True)
-        self._run_background(
+        self._run_loading_background(
             lambda: list_libraries(token, server),
             self._libraries_loaded,
             "Caricamento librerie fallito",
@@ -477,6 +475,29 @@ class MainWindow(QMainWindow):
         self._append_log(tb)
         QMessageBox.critical(self, "Errore", "Inventario fallito. Vedi log.")
 
+    def _run_loading_background(
+        self,
+        fn: Callable[[], Any],
+        on_success: Callable[[Any], None],
+        error_title: str,
+        on_error: Callable[[str], None] | None = None,
+    ) -> None:
+        self._set_loading_state(True)
+
+        def _on_success(result: Any) -> None:
+            self._set_loading_state(False)
+            on_success(result)
+
+        def _on_error(tb: str) -> None:
+            self._set_loading_state(False)
+            if on_error is not None:
+                on_error(tb)
+                return
+            message = tb.splitlines()[-1] if tb.splitlines() else tb
+            QMessageBox.critical(self, error_title, message)
+
+        self._run_background(fn, _on_success, error_title, on_error=_on_error)
+
     def _run_background(
         self,
         fn: Callable[[], Any],
@@ -500,7 +521,6 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _background_failed(self, title: str, tb: str, on_error: Callable[[str], None] | None = None) -> None:
-        self._set_loading_state(False)
         self._append_log(tb)
         if on_error is not None:
             on_error(tb)

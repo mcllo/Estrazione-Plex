@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -78,6 +80,75 @@ class InventoryWorker(QObject):
             self.failed.emit(traceback.format_exc())
 
 
+class AdvancedOptionsDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Impostazioni avanzate")
+        self.resize(620, 420)
+
+        root_layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.duration_output = QComboBox()
+        self.duration_output.addItems(["HMS", "BOTH"])
+        self.debug = QCheckBox("DEBUG: fogli Debug_XML / Debug_Streams")
+        self.skip_short_clips = QCheckBox("Salta clip brevi TS/M2TS")
+
+        self.clip_min_seconds = QSpinBox()
+        self.clip_min_seconds.setRange(1, 3600)
+        self.max_workers = QSpinBox()
+        self.max_workers.setRange(1, 64)
+        self.http_fast = QSpinBox()
+        self.http_fast.setRange(1, 16)
+        self.http_slow = QSpinBox()
+        self.http_slow.setRange(1, 16)
+        self.top_n_movies = QSpinBox()
+        self.top_n_movies.setRange(0, 999999)
+        self.top_n_movies.setToolTip("0 = tutti i film")
+        self.top_n_shows = QSpinBox()
+        self.top_n_shows.setRange(0, 999999)
+        self.top_n_shows.setToolTip("0 = tutte le serie")
+
+        form.addRow("DURATION_OUTPUT", self.duration_output)
+        form.addRow(self.debug)
+        form.addRow(self.skip_short_clips)
+        form.addRow("CLIP_MIN_SECONDS", self.clip_min_seconds)
+        form.addRow("MAX_WORKERS", self.max_workers)
+        form.addRow("HTTP FAST", self.http_fast)
+        form.addRow("HTTP SLOW", self.http_slow)
+        form.addRow("TOP_N_MOVIES (0=tutti)", self.top_n_movies)
+        form.addRow("TOP_N_SHOWS (0=tutti)", self.top_n_shows)
+        root_layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root_layout.addWidget(buttons)
+
+    def set_values(
+        self,
+        *,
+        duration_output: str,
+        debug: bool,
+        skip_short_clips: bool,
+        clip_min_seconds: int,
+        max_workers: int,
+        http_fast: int,
+        http_slow: int,
+        top_n_movies: int,
+        top_n_shows: int,
+    ) -> None:
+        self.duration_output.setCurrentText(duration_output)
+        self.debug.setChecked(debug)
+        self.skip_short_clips.setChecked(skip_short_clips)
+        self.clip_min_seconds.setValue(clip_min_seconds)
+        self.max_workers.setValue(max_workers)
+        self.http_fast.setValue(http_fast)
+        self.http_slow.setValue(http_slow)
+        self.top_n_movies.setValue(top_n_movies)
+        self.top_n_shows.setValue(top_n_shows)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -88,6 +159,15 @@ class MainWindow(QMainWindow):
         self.cancel_event = threading.Event()
         self.inventory_started_at: float | None = None
         self._busy_loading = False
+        self._advanced_duration_output = "HMS"
+        self._advanced_debug = False
+        self._advanced_skip_short_clips = True
+        self._advanced_clip_min_seconds = 300
+        self._advanced_max_workers = 8
+        self._advanced_http_fast = 3
+        self._advanced_http_slow = 1
+        self._advanced_top_n_movies = 0
+        self._advanced_top_n_shows = 0
         self._build_ui()
         self._load_saved_token_labels()
 
@@ -140,78 +220,40 @@ class MainWindow(QMainWindow):
         libs_layout.addWidget(self.library_list)
 
         options_group = QGroupBox("3. Opzioni script")
-        options_layout = QGridLayout(options_group)
+        options_layout = QVBoxLayout(options_group)
 
         self.run_preset = QComboBox()
         self.run_preset.addItems(["FAST_PRECISE", "SLOW_PRECISE"])
         self.output_profile = QComboBox()
         self.output_profile.addItems(["SLIM_BUDGET", "SLIM_RAW", "FULL"])
-        self.duration_output = QComboBox()
-        self.duration_output.addItems(["HMS", "BOTH"])
-
         self.write_csv = QCheckBox("Scrivi CSV")
         self.write_csv.setChecked(False)
         self.write_xlsx = QCheckBox("Scrivi XLSX")
         self.write_xlsx.setChecked(True)
-        self.debug = QCheckBox("DEBUG: fogli Debug_XML / Debug_Streams")
-        self.debug.setChecked(False)
-        self.skip_short_clips = QCheckBox("Salta clip brevi TS/M2TS")
-        self.skip_short_clips.setChecked(True)
-
-        self.max_workers = QSpinBox()
-        self.max_workers.setRange(1, 64)
-        self.max_workers.setValue(8)
-        self.http_fast = QSpinBox()
-        self.http_fast.setRange(1, 16)
-        self.http_fast.setValue(3)
-        self.http_slow = QSpinBox()
-        self.http_slow.setRange(1, 16)
-        self.http_slow.setValue(1)
-        self.clip_min_seconds = QSpinBox()
-        self.clip_min_seconds.setRange(1, 3600)
-        self.clip_min_seconds.setValue(300)
-        self.top_n_movies = QSpinBox()
-        self.top_n_movies.setRange(0, 999999)
-        self.top_n_movies.setValue(0)
-        self.top_n_shows = QSpinBox()
-        self.top_n_shows.setRange(0, 999999)
-        self.top_n_shows.setValue(0)
 
         self.output_basename = QLineEdit("plex_inventory_fast_slim")
         self.output_dir = QLineEdit(str(Path.home() / "Downloads"))
         self.browse_btn = QPushButton("Scegli cartella...")
         self.browse_btn.clicked.connect(self._browse_output_dir)
+        self.advanced_btn = QPushButton("Impostazioni avanzate...")
+        self.advanced_btn.clicked.connect(self._open_advanced_options)
 
-        options_layout.addWidget(QLabel("RUN_PRESET"), 0, 0)
-        options_layout.addWidget(self.run_preset, 0, 1)
-        options_layout.addWidget(QLabel("OUTPUT_PROFILE"), 0, 2)
-        options_layout.addWidget(self.output_profile, 0, 3)
-        options_layout.addWidget(QLabel("DURATION_OUTPUT"), 0, 4)
-        options_layout.addWidget(self.duration_output, 0, 5)
-
-        options_layout.addWidget(self.write_csv, 1, 0)
-        options_layout.addWidget(self.write_xlsx, 1, 1)
-        options_layout.addWidget(self.debug, 1, 2, 1, 2)
-        options_layout.addWidget(self.skip_short_clips, 1, 4)
-        options_layout.addWidget(self.clip_min_seconds, 1, 5)
-
-        options_layout.addWidget(QLabel("MAX_WORKERS"), 2, 0)
-        options_layout.addWidget(self.max_workers, 2, 1)
-        options_layout.addWidget(QLabel("HTTP FAST"), 2, 2)
-        options_layout.addWidget(self.http_fast, 2, 3)
-        options_layout.addWidget(QLabel("HTTP SLOW"), 2, 4)
-        options_layout.addWidget(self.http_slow, 2, 5)
-
-        options_layout.addWidget(QLabel("TOP_N_MOVIES (0=tutti)"), 3, 0)
-        options_layout.addWidget(self.top_n_movies, 3, 1)
-        options_layout.addWidget(QLabel("TOP_N_SHOWS (0=tutti)"), 3, 2)
-        options_layout.addWidget(self.top_n_shows, 3, 3)
-
-        options_layout.addWidget(QLabel("Nome file base"), 4, 0)
-        options_layout.addWidget(self.output_basename, 4, 1, 1, 2)
-        options_layout.addWidget(QLabel("Cartella output"), 5, 0)
-        options_layout.addWidget(self.output_dir, 5, 1, 1, 4)
-        options_layout.addWidget(self.browse_btn, 5, 5)
+        main_options_layout = QFormLayout()
+        main_options_layout.addRow("Modalità elaborazione", self.run_preset)
+        main_options_layout.addRow("Profilo output", self.output_profile)
+        format_row = QHBoxLayout()
+        format_row.addWidget(self.write_xlsx)
+        format_row.addWidget(self.write_csv)
+        format_row.addStretch(1)
+        main_options_layout.addRow("Formato output", format_row)
+        main_options_layout.addRow("Nome file base", self.output_basename)
+        output_dir_row = QHBoxLayout()
+        output_dir_row.addWidget(self.output_dir, 1)
+        output_dir_row.addWidget(self.browse_btn)
+        main_options_layout.addRow("Cartella output", output_dir_row)
+        main_options_layout.addRow("", self.advanced_btn)
+        options_layout.addLayout(main_options_layout)
+        options_layout.addStretch(1)
 
         middle_row = QHBoxLayout()
         middle_row.addWidget(libs_group, 2)
@@ -358,6 +400,31 @@ class MainWindow(QMainWindow):
                 libs.append(str(item.data(Qt.UserRole)))
         return libs
 
+    def _open_advanced_options(self) -> None:
+        dialog = AdvancedOptionsDialog(self)
+        dialog.set_values(
+            duration_output=self._advanced_duration_output,
+            debug=self._advanced_debug,
+            skip_short_clips=self._advanced_skip_short_clips,
+            clip_min_seconds=self._advanced_clip_min_seconds,
+            max_workers=self._advanced_max_workers,
+            http_fast=self._advanced_http_fast,
+            http_slow=self._advanced_http_slow,
+            top_n_movies=self._advanced_top_n_movies,
+            top_n_shows=self._advanced_top_n_shows,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._advanced_duration_output = dialog.duration_output.currentText()
+        self._advanced_debug = dialog.debug.isChecked()
+        self._advanced_skip_short_clips = dialog.skip_short_clips.isChecked()
+        self._advanced_clip_min_seconds = dialog.clip_min_seconds.value()
+        self._advanced_max_workers = dialog.max_workers.value()
+        self._advanced_http_fast = dialog.http_fast.value()
+        self._advanced_http_slow = dialog.http_slow.value()
+        self._advanced_top_n_movies = dialog.top_n_movies.value()
+        self._advanced_top_n_shows = dialog.top_n_shows.value()
+
     def _make_config(self) -> InventoryConfig:
         token = self._selected_token()
         server = self.server_combo.currentText().strip()
@@ -377,18 +444,18 @@ class MainWindow(QMainWindow):
             output_dir=output_dir,
             output_basename=self.output_basename.text().strip() or "plex_inventory_fast_slim",
             run_preset=self.run_preset.currentText(),
-            max_workers=self.max_workers.value(),
-            http_concurrency_fast=self.http_fast.value(),
-            http_concurrency_slow=self.http_slow.value(),
+            max_workers=self._advanced_max_workers,
+            http_concurrency_fast=self._advanced_http_fast,
+            http_concurrency_slow=self._advanced_http_slow,
             write_csv=self.write_csv.isChecked(),
             write_xlsx=self.write_xlsx.isChecked(),
-            duration_output=self.duration_output.currentText(),
+            duration_output=self._advanced_duration_output,
             output_profile=self.output_profile.currentText(),
-            debug=self.debug.isChecked(),
-            top_n_movies=self.top_n_movies.value() or None,
-            top_n_shows=self.top_n_shows.value() or None,
-            skip_short_clips=self.skip_short_clips.isChecked(),
-            clip_min_seconds=self.clip_min_seconds.value(),
+            debug=self._advanced_debug,
+            top_n_movies=self._advanced_top_n_movies or None,
+            top_n_shows=self._advanced_top_n_shows or None,
+            skip_short_clips=self._advanced_skip_short_clips,
+            clip_min_seconds=self._advanced_clip_min_seconds,
         )
 
     def _start_inventory(self) -> None:

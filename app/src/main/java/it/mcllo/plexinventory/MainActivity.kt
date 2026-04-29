@@ -95,7 +95,7 @@ fun PlexInventoryApp() {
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("Plex Inventory Android", style = MaterialTheme.typography.headlineSmall)
+                Text("Estrazione Plex", style = MaterialTheme.typography.headlineSmall)
 
                 OutlinedTextField(
                     value = token,

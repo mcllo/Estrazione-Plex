@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self._threads: list[QThread] = []
         self.cancel_event = threading.Event()
         self.inventory_started_at: float | None = None
+        self._busy_loading = False
         self._build_ui()
         self._load_saved_token_labels()
 
@@ -293,12 +294,19 @@ class MainWindow(QMainWindow):
         return token
 
     def _fetch_servers(self) -> None:
+        if self._busy_loading:
+            return
         token = self._selected_token()
         if not token:
             QMessageBox.warning(self, "Server", "Inserisci o seleziona un token Plex.")
             return
         self._append_log("Carico server Plex...")
-        self._run_background(lambda: list_plex_servers(token), self._servers_loaded, "Caricamento server fallito")
+        self._run_loading_background(
+            lambda: list_plex_servers(token),
+            self._servers_loaded,
+            "Caricamento server fallito",
+            on_error=self._servers_failed,
+        )
 
     def _servers_loaded(self, servers: list[str]) -> None:
         self.server_combo.clear()
@@ -310,13 +318,20 @@ class MainWindow(QMainWindow):
         self._append_log(f"Server trovati: {len(servers)}")
 
     def _fetch_libraries(self) -> None:
+        if self._busy_loading:
+            return
         token = self._selected_token()
         server = self.server_combo.currentText().strip()
         if not token or not server:
             QMessageBox.warning(self, "Librerie", "Inserisci token e seleziona un server Plex.")
             return
         self._append_log(f"Carico librerie da {server}...")
-        self._run_background(lambda: list_libraries(token, server), self._libraries_loaded, "Caricamento librerie fallito")
+        self._run_loading_background(
+            lambda: list_libraries(token, server),
+            self._libraries_loaded,
+            "Caricamento librerie fallito",
+            on_error=self._libraries_failed,
+        )
 
     def _libraries_loaded(self, libs: list[dict[str, str]]) -> None:
         self.library_list.clear()
@@ -458,13 +473,42 @@ class MainWindow(QMainWindow):
         self._append_log(tb)
         QMessageBox.critical(self, "Errore", "Inventario fallito. Vedi log.")
 
-    def _run_background(self, fn: Callable[[], Any], on_success: Callable[[Any], None], error_title: str) -> None:
+    def _run_loading_background(
+        self,
+        fn: Callable[[], Any],
+        on_success: Callable[[Any], None],
+        error_title: str,
+        on_error: Callable[[str], None] | None = None,
+    ) -> None:
+        self._set_loading_state(True)
+
+        def _on_success(result: Any) -> None:
+            self._set_loading_state(False)
+            on_success(result)
+
+        def _on_error(tb: str) -> None:
+            self._set_loading_state(False)
+            if on_error is not None:
+                on_error(tb)
+                return
+            message = tb.splitlines()[-1] if tb.splitlines() else tb
+            QMessageBox.critical(self, error_title, message)
+
+        self._run_background(fn, _on_success, error_title, on_error=_on_error)
+
+    def _run_background(
+        self,
+        fn: Callable[[], Any],
+        on_success: Callable[[Any], None],
+        error_title: str,
+        on_error: Callable[[str], None] | None = None,
+    ) -> None:
         thread = QThread(self)
         worker = GenericWorker(fn)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(on_success)
-        worker.failed.connect(lambda tb: self._background_failed(error_title, tb))
+        worker.failed.connect(lambda tb: self._background_failed(error_title, tb, on_error=on_error))
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -474,9 +518,27 @@ class MainWindow(QMainWindow):
         thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
         thread.start()
 
-    def _background_failed(self, title: str, tb: str) -> None:
+    def _background_failed(self, title: str, tb: str, on_error: Callable[[str], None] | None = None) -> None:
         self._append_log(tb)
+        if on_error is not None:
+            on_error(tb)
+            return
         QMessageBox.critical(self, title, tb.splitlines()[-1] if tb.splitlines() else tb)
+
+    def _servers_failed(self, tb: str) -> None:
+        self.server_combo.clear()
+        message = tb.splitlines()[-1] if tb.splitlines() else tb
+        QMessageBox.warning(self, "Server", f"Impossibile caricare i server Plex.\n{message}")
+
+    def _libraries_failed(self, tb: str) -> None:
+        self.library_list.clear()
+        message = tb.splitlines()[-1] if tb.splitlines() else tb
+        QMessageBox.warning(self, "Librerie", f"Impossibile caricare le librerie.\n{message}")
+
+    def _set_loading_state(self, loading: bool) -> None:
+        self._busy_loading = loading
+        self.fetch_servers_btn.setEnabled(not loading)
+        self.fetch_libraries_btn.setEnabled(not loading)
 
     @Slot(str)
     def _append_log(self, text: str) -> None:

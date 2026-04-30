@@ -3,26 +3,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from typing import Literal
 
 POLICY_VERSION = "v12_normative_general_policy_tv_year_fix_audio_engineering"
 
 RESOLUTION_RANK = {"480": 1, "576": 1, "720": 2, "1080": 3, "1440": 4, "2160": 5, "4k": 5}
 HDR_RANK = {"": 0, "sdr": 0, "hdr": 1, "hdr10": 2, "hdr10+": 3, "dolby vision": 4, "dv": 4}
 
-SOURCE_PATTERNS = {
-    "full_disc": [r"full.?disc", r"bdmv", r"complete.?blu"],
-    "dirtyhippie": [r"dirtyhippie"],
-    "ai_upscale": [r"ai.?upscale", r"upscaled"],
-    "remux": [r"remux"],
-    "bluray": [r"blu.?ray", r"bdrip"],
-    "web": [r"web.?dl", r"web.?rip"],
+SOURCE_RANK = {
+    "full_disc": 9,
+    "dirtyhippie": 8,
+    "ai_upscale": 8,
+    "remux": 7,
+    "bluray": 6,
+    "web": 5,
+    "repack": 4,
+    "encode": 3,
 }
-SOURCE_RANK = {"full_disc": 6, "dirtyhippie": 5, "ai_upscale": 5, "remux": 4, "bluray": 3, "web": 2, "unknown": 1}
 
 
 @dataclass(frozen=True)
 class AudioScore:
-    tier: int
+    codec_family: Literal["lossless_or_master", "lossy", "unknown"]
+    broad_tier: Literal["mono", "stereo_or_matrix", "surround", "high_surround", "unknown"]
     channels: float
     bitrate: float
 
@@ -33,12 +36,29 @@ def normalize_text(value: str | None) -> str:
     return re.sub(r"[^a-z0-9 ]", "", text)
 
 
-def source_tag_from_path(file_path: str) -> str:
-    low = file_path.lower()
-    for tag, patterns in SOURCE_PATTERNS.items():
-        if any(re.search(p, low) for p in patterns):
-            return tag
-    return "unknown"
+def normalized_basename(path: str) -> str:
+    return normalize_text(Path(path or "").name)
+
+
+def source_tag_from_path(file_path: str, container: str | None = None) -> str:
+    low = (file_path or "").lower()
+    base = Path(low).name
+    cont = (container or "").lower()
+    if any(x in low for x in ["dirtyhippie"]):
+        return "dirtyhippie"
+    if any(x in low for x in ["aiupscale", "ai_upscale", "upscaled"]):
+        return "ai_upscale"
+    if cont in {"m2ts", "mpegts", "ts"} or base.endswith(".m2ts") or any(x in low for x in ["full disc", "full_disc", "bdmv", "complete blu"]):
+        return "full_disc"
+    if "remux" in low:
+        return "remux"
+    if any(x in low for x in ["web-dl", "webdl", "webrip", "web rip"]):
+        return "web"
+    if any(x in low for x in ["bluray", "blu-ray", "bdrip"]):
+        return "bluray"
+    if "repack" in low:
+        return "repack"
+    return "encode"
 
 
 def resolution_rank(value: str | None) -> int:
@@ -50,28 +70,68 @@ def resolution_rank(value: str | None) -> int:
 
 
 def hdr_rank(value: str | None) -> int:
-    text = (value or "").strip().lower()
-    return HDR_RANK.get(text, 0)
+    return HDR_RANK.get((value or "").strip().lower(), 0)
 
 
-def _codec_tier(codec: str) -> int:
-    c = codec.lower()
-    if any(x in c for x in ["truehd", "dts-hd", "flac", "pcm", "atmos"]):
-        return 4
-    if "dd+" in c or "eac3" in c:
-        return 3
-    if "dd" in c or "ac3" in c or "dts" in c:
-        return 2
-    return 1
+def audio_codec_family(quality: str | None) -> Literal["lossless_or_master", "lossy", "unknown"]:
+    q = str(quality or "").lower()
+    if any(x in q for x in ["truehd", "dts-hd", "flac", "pcm", "master", "ma"]):
+        return "lossless_or_master"
+    if any(x in q for x in ["dd", "dd+", "eac3", "ac3", "aac", "dts"]):
+        return "lossy"
+    return "unknown"
+
+
+def _channels_from_quality(quality: str | None) -> float:
+    q = str(quality or "").lower()
+    m = re.search(r"(\d(?:\.\d)?)", q)
+    return float(m.group(1)) if m else 0.0
+
+
+def broad_channel_tier(quality: str | None) -> Literal["mono", "stereo_or_matrix", "surround", "high_surround", "unknown"]:
+    ch = _channels_from_quality(quality)
+    if ch == 0:
+        return "unknown"
+    if ch <= 1.1:
+        return "mono"
+    if ch <= 2.1:
+        return "stereo_or_matrix"
+    if ch <= 5.1:
+        return "surround"
+    return "high_surround"
 
 
 def parse_audio_quality(value: str | None, bitrate: float | None) -> AudioScore:
-    text = (value or "").lower()
-    channels = 0.0
-    m = re.search(r"(\d(?:\.\d)?)", text)
-    if m:
-        channels = float(m.group(1))
-    return AudioScore(tier=_codec_tier(text), channels=channels, bitrate=float(bitrate or 0.0))
+    return AudioScore(audio_codec_family(value), broad_channel_tier(value), _channels_from_quality(value), float(bitrate or 0.0))
+
+
+def _tier_num(t: str) -> int:
+    return {"unknown": 0, "mono": 1, "stereo_or_matrix": 2, "surround": 3, "high_surround": 4}[t]
+
+
+def audio_better(candidate: AudioScore, reference: AudioScore, language: str = "it") -> bool:
+    # DD+ vs DD guardrail on same channels
+    if candidate.channels == reference.channels:
+        if candidate.codec_family == reference.codec_family == "lossy":
+            return candidate.bitrate > reference.bitrate
+    # lossless guardrails
+    if candidate.codec_family == "lossless_or_master" and reference.codec_family == "lossy":
+        return _tier_num(candidate.broad_tier) + 1 >= _tier_num(reference.broad_tier)
+    if candidate.codec_family == "lossy" and reference.codec_family == "lossless_or_master":
+        return _tier_num(candidate.broad_tier) - _tier_num(reference.broad_tier) > 1
+    # unknown conservative
+    if candidate.codec_family == "unknown" and reference.codec_family != "unknown":
+        return False
+    if reference.codec_family == "unknown" and candidate.codec_family != "unknown":
+        return True
+    if _tier_num(candidate.broad_tier) != _tier_num(reference.broad_tier):
+        return _tier_num(candidate.broad_tier) > _tier_num(reference.broad_tier)
+    return candidate.bitrate > reference.bitrate
+
+
+def audio_score(a: AudioScore) -> tuple[int, int, float, float]:
+    fam = {"unknown": 0, "lossy": 1, "lossless_or_master": 2}[a.codec_family]
+    return (fam, _tier_num(a.broad_tier), a.channels, a.bitrate)
 
 
 def lowbit4k_penalty(is_movie: bool, row_resolution_rank: int, video_bitrate: float, has_good_1080p: bool) -> bool:

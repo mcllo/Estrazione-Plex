@@ -1,15 +1,18 @@
 from pathlib import Path
 import pandas as pd
 
-from plex_inventory_app.duplicate_analysis import load_inventory_workbook, analyze_duplicates, _group_key
-from plex_inventory_app.duplicate_policy_v12 import source_tag_from_path, lowbit4k_penalty
+from plex_inventory_app.duplicate_analysis import (
+    load_inventory_workbook, analyze_duplicates, movie_group_key, tv_group_key, build_group_key,
+    detect_italian_audio_state,
+)
+from plex_inventory_app.duplicate_policy_v12 import source_tag_from_path, lowbit4k_penalty, parse_audio_quality, audio_better
 
-def make_library_df():
-    return pd.DataFrame([{"type":"movie","title_or_series":"Film A","season":"","episode":"","episode_title":"","year":2020,"resolution":"1080p","hdr":"SDR","videoCodec":"h264","container":"mkv","duration_hms":"01:30:00","bitrate_mbps_video":5.0,"audio_it_bitrate_mbps":0.6,"audio_it_quality":"DD 5.1","audio_en_bitrate_mbps":0.5,"audio_en_quality":"DD 5.1","size_gib":5.0,"imdb_id":"tt1","rating_key":"1","file":"/a.mkv"}])
 
-def test_load_library_ok(tmp_path: Path):
-    p = tmp_path / "in.xlsx"; make_library_df().to_excel(p, sheet_name="Library", index=False)
-    assert len(load_inventory_workbook(p)) == 1
+def make_row(**kwargs):
+    base = {"type":"movie","title_or_series":"Film A","season":"","episode":"","episode_title":"","year":2020,"resolution":"1080p","hdr":"SDR","videoCodec":"h264","container":"mkv","duration_hms":"01:30:00","bitrate_mbps_video":5.0,"audio_it_bitrate_mbps":0.6,"audio_it_quality":"DD 5.1","audio_en_bitrate_mbps":0.5,"audio_en_quality":"DD 5.1","size_gib":5.0,"imdb_id":"tt1","rating_key":"1","file":"/a.mkv"}
+    base.update(kwargs)
+    return base
+
 
 def test_missing_library(tmp_path: Path):
     p = tmp_path / "in.xlsx"; pd.DataFrame([{"a":1}]).to_excel(p, sheet_name="X", index=False)
@@ -18,47 +21,67 @@ def test_missing_library(tmp_path: Path):
     except ValueError as e:
         assert "Library" in str(e)
 
-def test_grouping_movie_imdb_tmdb_titleyear():
-    r = make_library_df().iloc[0]; assert _group_key(r).startswith("movie:imdb")
-    r2 = r.copy(); r2["imdb_id"]=""; r2["tmdb_id"]="99"; assert "tmdb" in _group_key(r2)
-    r3 = r.copy(); r3["imdb_id"]=""; r3["tmdb_id"]=""; assert "titleyear" in _group_key(r3)
 
-def test_grouping_tv_year_distinct():
-    base = make_library_df().iloc[0].copy(); base["type"]="episode"; base["season"]=1; base["episode"]=1
-    a = base.copy(); a["year"]=2020; b = base.copy(); b["year"]=2021
-    assert _group_key(a) != _group_key(b)
+def test_grouping_keys():
+    r = pd.Series(make_row())
+    assert movie_group_key(r).startswith("movie:imdb")
+    r2 = pd.Series(make_row(imdb_id="", tmdb_id="9")); assert "tmdb" in movie_group_key(r2)
+    r3 = pd.Series(make_row(type="episode", season=1, episode=2, year=2020));
+    r4 = pd.Series(make_row(type="episode", season=1, episode=2, year=2021));
+    assert tv_group_key(r3) != tv_group_key(r4)
+    assert build_group_key(r3).startswith("tv:")
 
-def test_source_and_penalty():
+
+def test_duration_split_60s(tmp_path: Path):
+    df = pd.DataFrame([make_row(duration_hms="01:30:00", file="/a.mkv", rating_key="1"), make_row(duration_hms="01:31:05", file="/b.mkv", rating_key="2")])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    assert all_df.empty
+
+
+def test_source_tags():
+    assert source_tag_from_path('/x/BDMV/file.m2ts', 'm2ts') == 'full_disc'
     assert source_tag_from_path('/x/DirtyHippie/file.mkv') == 'dirtyhippie'
+    assert source_tag_from_path('/x/ai_upscale/file.mkv') == 'ai_upscale'
+    assert source_tag_from_path('/x/remux/file.mkv') == 'remux'
+    assert source_tag_from_path('/x/web-dl/file.mkv') == 'web'
+    assert source_tag_from_path('/x/bluray/file.mkv') == 'bluray'
+    assert source_tag_from_path('/x/repack/file.mkv') == 'repack'
+    assert source_tag_from_path('/x/other/file.mkv') == 'encode'
+
+
+def test_italian_state_yes_unknown():
+    row = pd.Series(make_row(audio_it_quality="", file="/movie.m2ts", container="m2ts"))
+    ds = pd.DataFrame([{"rating_key":"1", "lang":"ita"}])
+    assert detect_italian_audio_state(row, ds, None) == "yes"
+    assert detect_italian_audio_state(row, None, None) == "unknown"
+
+
+def test_audio_guardrails():
+    dd = parse_audio_quality("DD 5.1", 0.9)
+    ddp = parse_audio_quality("DD+ 5.1", 0.3)
+    assert not audio_better(ddp, dd, "it")
+    lossless = parse_audio_quality("TrueHD 5.1", 1.5)
+    lossy = parse_audio_quality("DD+ 5.1", 1.6)
+    assert not audio_better(lossy, lossless, "it")
+
+
+def test_lowbit4k_penalty_rule():
     assert lowbit4k_penalty(True, 5, 10.0, True)
+    assert not lowbit4k_penalty(True, 5, 10.0, False)
 
-def test_output_sheets(tmp_path: Path):
-    df = pd.concat([make_library_df(), make_library_df().assign(file='/b.mkv', rating_key='2')], ignore_index=True)
-    p = tmp_path / 'inv.xlsx'; df.to_excel(p, sheet_name='Library', index=False)
-    out = analyze_duplicates(p, tmp_path)
-    sheets = pd.ExcelFile(out).sheet_names
-    assert set(["Sintesi","Da_eliminare","Da_verificare","Conserva","Tutte_le_decisioni"]).issubset(set(sheets))
 
-def test_delete_proposed_case(tmp_path: Path):
-    base = make_library_df()
-    worse_en = base.assign(file="/c.mkv", rating_key="3", bitrate_mbps_video=4.9, audio_en_bitrate_mbps=0.9)
-    df = pd.concat([base, worse_en], ignore_index=True)
-    p = tmp_path / "inv.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+def test_actions_and_sheets(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/best.mkv", rating_key="1", resolution="1080p", bitrate_mbps_video=8.0, audio_en_bitrate_mbps=0.4),
+        make_row(file="/enadv.mkv", rating_key="2", resolution="1080p", bitrate_mbps_video=7.9, audio_en_bitrate_mbps=1.2),
+        make_row(file="/cross.mkv", rating_key="3", resolution="1080p", bitrate_mbps_video=7.7, audio_it_quality="TrueHD 5.1", audio_it_bitrate_mbps=1.4),
+        make_row(file="/full_disc.m2ts", rating_key="4", container="m2ts", audio_it_quality=""),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
+    xls = pd.ExcelFile(out)
+    assert set(["Sintesi","Da_eliminare","Da_verificare","Conserva","Tutte_le_decisioni"]).issubset(set(xls.sheet_names))
     all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
-    assert "DELETE_PROPOSED" in set(all_df["final_action"])
-
-def test_review_manual_case(tmp_path: Path):
-    keep = make_library_df()
-    cross = keep.assign(
-        file="/d.mkv",
-        rating_key="4",
-        bitrate_mbps_video=4.6,
-        audio_it_quality="DD+ 5.1",
-        audio_it_bitrate_mbps=1.2,
-    )
-    df = pd.concat([keep, cross], ignore_index=True)
-    p = tmp_path / "inv.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
-    out = analyze_duplicates(p, tmp_path)
-    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
-    assert "REVIEW_MANUAL" in set(all_df["final_action"])
+    assert {"KEEP", "DELETE_PROPOSED", "REVIEW_MANUAL"}.issubset(set(all_df["final_action"]))

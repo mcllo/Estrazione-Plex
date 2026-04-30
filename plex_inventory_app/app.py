@@ -83,6 +83,25 @@ class InventoryWorker(QObject):
             self.failed.emit(traceback.format_exc())
 
 
+class DuplicateAnalysisWorker(QObject):
+    log = Signal(str)
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, inventory_path: str, output_dir: str) -> None:
+        super().__init__()
+        self.inventory_path = inventory_path
+        self.output_dir = output_dir
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            out = analyze_duplicates(Path(self.inventory_path), Path(self.output_dir), log_callback=lambda m: self.log.emit(m))
+            self.finished.emit(out)
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+
+
 class AdvancedOptionsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -339,8 +358,6 @@ class MainWindow(QMainWindow):
         self.dup_log_box.verticalScrollBar().setValue(self.dup_log_box.verticalScrollBar().maximum())
 
     def _run_duplicate_analysis(self) -> None:
-        # TODO: eseguire l'analisi duplicati su thread dedicato come fatto per l'inventario,
-        # per evitare blocchi UI su workbook molto grandi.
         inventory = self.dup_inventory_path.text().strip()
         output_dir = self.dup_output_dir.text().strip()
         if not inventory:
@@ -354,15 +371,32 @@ class MainWindow(QMainWindow):
             self.dup_output_dir.setText(output_dir)
         self.dup_log_box.clear()
         self.dup_run_btn.setEnabled(False)
-        try:
-            out_path = analyze_duplicates(Path(inventory), Path(output_dir), log_callback=self._dup_log)
-        except Exception as exc:
-            self._dup_log(str(exc))
-            QMessageBox.critical(self, "Analisi duplicati", str(exc))
-            self.dup_run_btn.setEnabled(True)
-            return
+        thread = QThread(self)
+        worker = DuplicateAnalysisWorker(inventory, output_dir)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.log.connect(self._dup_log)
+        worker.finished.connect(self._duplicate_finished)
+        worker.failed.connect(self._duplicate_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._threads.append(thread)
+        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.start()
+
+    @Slot(object)
+    def _duplicate_finished(self, out_path: Any) -> None:
         self.dup_run_btn.setEnabled(True)
         QMessageBox.information(self, "Analisi duplicati completata", f"File generato:\n{out_path}")
+
+    @Slot(str)
+    def _duplicate_failed(self, tb: str) -> None:
+        self.dup_run_btn.setEnabled(True)
+        self._dup_log(tb)
+        QMessageBox.critical(self, "Analisi duplicati", tb.splitlines()[-1] if tb.splitlines() else tb)
 
     def _load_saved_token_labels(self) -> None:
         current = self.saved_tokens.currentText()

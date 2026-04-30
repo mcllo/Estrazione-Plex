@@ -339,6 +339,8 @@ class MainWindow(QMainWindow):
         self.dup_log_box.verticalScrollBar().setValue(self.dup_log_box.verticalScrollBar().maximum())
 
     def _run_duplicate_analysis(self) -> None:
+        # TODO: eseguire l'analisi duplicati su thread dedicato come fatto per l'inventario,
+        # per evitare blocchi UI su workbook molto grandi.
         inventory = self.dup_inventory_path.text().strip()
         output_dir = self.dup_output_dir.text().strip()
         if not inventory:
@@ -351,12 +353,15 @@ class MainWindow(QMainWindow):
             output_dir = str(Path(inventory).parent)
             self.dup_output_dir.setText(output_dir)
         self.dup_log_box.clear()
+        self.dup_run_btn.setEnabled(False)
         try:
             out_path = analyze_duplicates(Path(inventory), Path(output_dir), log_callback=self._dup_log)
         except Exception as exc:
             self._dup_log(str(exc))
             QMessageBox.critical(self, "Analisi duplicati", str(exc))
+            self.dup_run_btn.setEnabled(True)
             return
+        self.dup_run_btn.setEnabled(True)
         QMessageBox.information(self, "Analisi duplicati completata", f"File generato:\n{out_path}")
 
     def _load_saved_token_labels(self) -> None:

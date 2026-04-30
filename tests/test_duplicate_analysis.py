@@ -38,3 +38,27 @@ def test_output_sheets(tmp_path: Path):
     out = analyze_duplicates(p, tmp_path)
     sheets = pd.ExcelFile(out).sheet_names
     assert set(["Sintesi","Da_eliminare","Da_verificare","Conserva","Tutte_le_decisioni"]).issubset(set(sheets))
+
+def test_delete_proposed_case(tmp_path: Path):
+    base = make_library_df()
+    worse_en = base.assign(file="/c.mkv", rating_key="3", bitrate_mbps_video=4.9, audio_en_bitrate_mbps=0.9)
+    df = pd.concat([base, worse_en], ignore_index=True)
+    p = tmp_path / "inv.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    assert "DELETE_PROPOSED" in set(all_df["final_action"])
+
+def test_review_manual_case(tmp_path: Path):
+    keep = make_library_df()
+    cross = keep.assign(
+        file="/d.mkv",
+        rating_key="4",
+        bitrate_mbps_video=4.6,
+        audio_it_quality="DD+ 5.1",
+        audio_it_bitrate_mbps=1.2,
+    )
+    df = pd.concat([keep, cross], ignore_index=True)
+    p = tmp_path / "inv.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    assert "REVIEW_MANUAL" in set(all_df["final_action"])

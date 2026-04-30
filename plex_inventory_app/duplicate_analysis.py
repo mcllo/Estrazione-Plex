@@ -48,6 +48,11 @@ def _group_key(row: pd.Series) -> str:
 
 
 def analyze_duplicates(inventory_path: Path, output_dir: Path, log_callback=None) -> Path:
+    """
+    Prima integrazione policy v12.
+    Nota: alcune regole avanzate (incluso uso completo Debug_XML/Debug_Streams e casistiche manuali complesse)
+    sono parziali e verranno estese in PR successive.
+    """
     log = log_callback or (lambda _msg: None)
     log(f"Caricamento report: {inventory_path}")
     df = load_inventory_workbook(inventory_path)
@@ -86,6 +91,13 @@ def analyze_duplicates(inventory_path: Path, output_dir: Path, log_callback=None
             if action != "KEEP" and float(row.get("audio_en_bitrate_mbps") or 0) > float(keeper.get("audio_en_bitrate_mbps") or 0):
                 action = "DELETE_PROPOSED"
                 reason = "vantaggio residuo su audio EN ; differenze contenute: copia ridondante"
+            if action == "DELETE_SAFE":
+                video_gap = abs(float(row.get("bitrate_mbps_video") or 0) - float(keeper.get("bitrate_mbps_video") or 0))
+                row_it = parse_audio_quality(row.get("audio_it_quality"), row.get("audio_it_bitrate_mbps"))
+                keep_it = parse_audio_quality(keeper.get("audio_it_quality"), keeper.get("audio_it_bitrate_mbps"))
+                if video_gap < 0.7 and (row_it.tier > keep_it.tier or row_it.bitrate > keep_it.bitrate * 1.3):
+                    action = "REVIEW_MANUAL"
+                    reason = "vantaggi incrociati: video vs audio/sorgente"
             results.append({**row.to_dict(), "group_status": "DUPLICATE", "cluster_index": 0, "title_or_episode": row.get("episode_title") or row.get("title_or_series"), "final_action": action, "reason": reason, "file_path": row.get("file"), "keep_reference": keeper.get("file"), "lowbit4k_penalized": bool(lowbit4k_penalty(str(row.get("type")).lower() == "movie", int(row.get("resolution_rank") or 0), float(row.get("bitrate_mbps_video") or 0), bool(has_good_1080)))})
     out_df = pd.DataFrame(results)
     if out_df.empty:

@@ -9,7 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -96,6 +96,7 @@ class DuplicateAnalysisWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
+            self.log.emit("Avvio analisi motore duplicati...")
             out = analyze_duplicates(Path(self.inventory_path), Path(self.output_dir), log_callback=lambda m: self.log.emit(m))
             self.finished.emit(out)
         except Exception:
@@ -178,6 +179,7 @@ class MainWindow(QMainWindow):
         self.resize(1080, 820)
         self.token_store = TokenStore()
         self._threads: list[QThread] = []
+        self._workers: dict[QThread, QObject] = {}
         self.cancel_event = threading.Event()
         self.inventory_started_at: float | None = None
         self._busy_loading = False
@@ -191,6 +193,11 @@ class MainWindow(QMainWindow):
         self._advanced_top_n_movies = 0
         self._advanced_top_n_shows = 0
         self.last_inventory_report_path: str | None = None
+        self._server_load_timer = QTimer(self)
+        self._server_load_timer.setSingleShot(True)
+        self._server_load_timer.timeout.connect(self._on_server_load_timeout)
+        self._server_load_generation = 0
+        self._active_server_load_generation: int | None = None
         self._build_ui()
         self._load_saved_token_labels()
 
@@ -337,6 +344,10 @@ class MainWindow(QMainWindow):
         self.dup_run_btn = QPushButton("Genera report duplicati")
         self.dup_run_btn.clicked.connect(self._run_duplicate_analysis)
         dup_layout.addWidget(self.dup_run_btn)
+        self.dup_progress = QProgressBar()
+        self.dup_progress.setRange(0, 100)
+        self.dup_progress.setValue(0)
+        dup_layout.addWidget(self.dup_progress)
         self.dup_log_box = QTextEdit()
         self.dup_log_box.setReadOnly(True)
         dup_layout.addWidget(self.dup_log_box, stretch=1)
@@ -370,7 +381,15 @@ class MainWindow(QMainWindow):
             output_dir = str(Path(inventory).parent)
             self.dup_output_dir.setText(output_dir)
         self.dup_log_box.clear()
+        self._dup_log("Avvio analisi duplicati...")
+        self._dup_log(f"Report: {inventory}")
+        self._dup_log(f"Output: {output_dir}")
+        self._dup_log("Lettura workbook XLSX...")
         self.dup_run_btn.setEnabled(False)
+        self.dup_run_btn.setText("Analisi in corso...")
+        self.dup_pick_inventory_btn.setEnabled(False)
+        self.dup_pick_output_btn.setEnabled(False)
+        self.dup_progress.setRange(0, 0)
         thread = QThread(self)
         worker = DuplicateAnalysisWorker(inventory, output_dir)
         worker.moveToThread(thread)
@@ -390,11 +409,21 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _duplicate_finished(self, out_path: Any) -> None:
         self.dup_run_btn.setEnabled(True)
+        self.dup_run_btn.setText("Genera report duplicati")
+        self.dup_pick_inventory_btn.setEnabled(True)
+        self.dup_pick_output_btn.setEnabled(True)
+        self.dup_progress.setRange(0, 100)
+        self.dup_progress.setValue(100)
         QMessageBox.information(self, "Analisi duplicati completata", f"File generato:\n{out_path}")
 
     @Slot(str)
     def _duplicate_failed(self, tb: str) -> None:
         self.dup_run_btn.setEnabled(True)
+        self.dup_run_btn.setText("Genera report duplicati")
+        self.dup_pick_inventory_btn.setEnabled(True)
+        self.dup_pick_output_btn.setEnabled(True)
+        self.dup_progress.setRange(0, 100)
+        self.dup_progress.setValue(0)
         self._dup_log(tb)
         QMessageBox.critical(self, "Analisi duplicati", tb.splitlines()[-1] if tb.splitlines() else tb)
 
@@ -455,14 +484,24 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Server", "Inserisci o seleziona un token Plex.")
             return
         self._append_log("Carico server Plex...")
+        self._append_log("Contatto plex.tv...")
+        self._server_load_generation += 1
+        generation = self._server_load_generation
+        self._active_server_load_generation = generation
+        self._server_load_timer.start(15000)
         self._run_loading_background(
             lambda: list_plex_servers(token),
-            self._servers_loaded,
+            lambda servers: self._servers_loaded(servers, generation),
             "Caricamento server fallito",
-            on_error=self._servers_failed,
+            on_error=lambda tb: self._servers_failed(tb, generation),
         )
 
-    def _servers_loaded(self, servers: list[str]) -> None:
+    def _servers_loaded(self, servers: list[str], generation: int) -> None:
+        if generation != self._active_server_load_generation:
+            self._append_log("Risultato caricamento server ignorato (operazione scaduta o superata).")
+            return
+        self._server_load_timer.stop()
+        self._active_server_load_generation = None
         self.server_combo.clear()
         self.server_combo.addItems(servers)
         if not servers:
@@ -699,7 +738,9 @@ class MainWindow(QMainWindow):
         worker.failed.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._threads.append(thread)
+        self._workers[thread] = worker
         thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.finished.connect(lambda: self._workers.pop(thread, None))
         thread.start()
 
     def _background_failed(self, title: str, tb: str, on_error: Callable[[str], None] | None = None) -> None:
@@ -709,9 +750,19 @@ class MainWindow(QMainWindow):
             return
         QMessageBox.critical(self, title, tb.splitlines()[-1] if tb.splitlines() else tb)
 
-    def _servers_failed(self, tb: str) -> None:
+    def _servers_failed(self, tb: str, generation: int | None = None) -> None:
+        if generation is not None and generation != self._active_server_load_generation:
+            self._append_log("Errore caricamento server ignorato (operazione scaduta o superata).")
+            return
+        if generation is not None:
+            self._server_load_timer.stop()
+            self._active_server_load_generation = None
         self.server_combo.clear()
+        self._append_log(tb)
+        self._append_log("Timeout caricamento server" if "timeout" in tb.lower() else "Errore caricamento server")
         message = tb.splitlines()[-1] if tb.splitlines() else tb
+        if "timeout" in tb.lower():
+            message = "Timeout nel caricamento server Plex. Verifica connessione, token o stato di plex.tv e riprova."
         QMessageBox.warning(self, "Server", f"Impossibile caricare i server Plex.\n{message}")
 
     def _libraries_failed(self, tb: str) -> None:
@@ -723,6 +774,19 @@ class MainWindow(QMainWindow):
         self._busy_loading = loading
         self.fetch_servers_btn.setEnabled(not loading)
         self.fetch_libraries_btn.setEnabled(not loading)
+
+    def _on_server_load_timeout(self) -> None:
+        if self._active_server_load_generation is None:
+            return
+        self._append_log("Timeout caricamento server")
+        self._append_log("WARNING: watchdog UI: caricamento server oltre 15 secondi, ripristino stato.")
+        self._active_server_load_generation = None
+        self._set_loading_state(False)
+        QMessageBox.warning(
+            self,
+            "Server",
+            "Timeout nel caricamento server Plex. Verifica connessione, token o stato di plex.tv e riprova.",
+        )
 
     @Slot(str)
     def _append_log(self, text: str) -> None:

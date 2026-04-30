@@ -93,7 +93,10 @@ class InventoryResult:
 
 
 def list_plex_servers(token: str) -> list[str]:
-    account = MyPlexAccount(token=token.strip())
+    try:
+        account = MyPlexAccount(token=token.strip(), timeout=6)
+    except TypeError:
+        account = MyPlexAccount(token=token.strip())
     names: list[str] = []
     for res in account.resources():
         # Plex can return clients and servers. A connectable Plex Media Server usually has provides=server.
@@ -118,13 +121,19 @@ def list_libraries(token: str, server_name: str) -> list[dict[str, str]]:
 
 
 def _connect_main(token: str, server_name: str) -> PlexServer:
-    account = MyPlexAccount(token=token.strip())
+    try:
+        account = MyPlexAccount(token=token.strip(), timeout=6)
+    except TypeError:
+        account = MyPlexAccount(token=token.strip())
     resource = account.resource(server_name.strip())
     return resource.connect(timeout=6)
 
 
 def _connect_resource(token: str, server_name: str):
-    account = MyPlexAccount(token=token.strip())
+    try:
+        account = MyPlexAccount(token=token.strip(), timeout=6)
+    except TypeError:
+        account = MyPlexAccount(token=token.strip())
     resource = account.resource(server_name.strip())
     plex = resource.connect(timeout=6)
     return resource, plex

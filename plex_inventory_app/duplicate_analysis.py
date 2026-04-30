@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+import re
 import pandas as pd
 
 from .duplicate_policy_v12 import (
@@ -81,7 +82,10 @@ def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.D
         if matches.empty:
             return None
         text = " ".join(matches.astype(str).fillna("").agg(" ".join, axis=1).tolist()).lower()
-        if "italian" in text or "ita" in text:
+        tokens = set(re.findall(r"[a-z]+", text))
+        positive_tokens = {"italian", "italiano", "ita", "it"}
+        negative_tokens = {"latino", "latin", "american", "spanish", "espanol", "spa", "castilian"}
+        if tokens & positive_tokens and not (tokens & negative_tokens):
             return "yes"
         if any(x in text for x in ["audio", "language", "lang"]):
             return "no"

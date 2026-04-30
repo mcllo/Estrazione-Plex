@@ -9,7 +9,7 @@ App desktop Windows per generare l'inventario Plex in CSV/XLSX partendo dal toke
 - Su Windows i token sono cifrati con DPAPI, legati all'utente Windows corrente.
 - Caricamento automatico server Plex dopo inserimento token.
 - Caricamento librerie Movies/TV selezionabili.
-- Checkbox separate CSV/XLSX.
+- Formato output principale orientato a XLSX, con opzioni dedicate nel pannello.
 - Scelta manuale cartella output.
 - Barra progresso e log errori.
 - Build Windows portable in formato cartella + ZIP, senza installer.
@@ -49,8 +49,9 @@ PlexInventory-windows-portable.zip
 5. Seleziona il server Plex.
 6. Premi **Carica librerie**.
 7. Seleziona le librerie da includere. Se non selezioni nulla, vengono incluse tutte le librerie Movies/TV.
-8. Scegli CSV/XLSX, cartella output e opzioni.
-9. Premi **Avvia inventario**.
+8. Scegli formato output, cartella output e opzioni principali.
+9. Per parametri tecnici usa **Impostazioni avanzate...** (worker, HTTP concurrency, TOP_N, clip brevi, debug).
+10. Premi **Avvia inventario**.
 
 ## Analisi duplicati integrata
 

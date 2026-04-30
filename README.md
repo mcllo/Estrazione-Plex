@@ -12,3 +12,10 @@ Important implementation constraints:
 - Do not copy final decisions from `expected_duplicate_report.xlsx` into production logic.
 - Do not introduce title-specific, imdb_id-specific, tmdb_id-specific, group_key-specific, basename-specific, or file-path-specific exceptions.
 - Use the `file` / `file_path` field as the physical file action target, not `rating_key` alone.
+
+## Analisi duplicati integrata
+
+- Usa il tab **Analisi duplicati** per selezionare un report inventario XLSX (oppure quello appena generato dal tab Inventario Plex viene proposto automaticamente).
+- Le regole di classificazione duplicate sono integrate nel codice Python (policy v12), non vengono caricate a runtime da JSON.
+- Il report inventario originale non viene modificato.
+- L'app genera un secondo file: `report_duplicati_plex_classificato_YYYYMMDD_HHMMSS.xlsx`.

@@ -31,12 +31,15 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QSpinBox,
     QTextEdit,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .core import InventoryConfig, list_libraries, list_plex_servers, run_inventory
 from .token_store import TokenStore
+from .duplicate_analysis import analyze_duplicates
+from .duplicate_policy_v12 import POLICY_VERSION
 
 
 class GenericWorker(QObject):
@@ -168,6 +171,7 @@ class MainWindow(QMainWindow):
         self._advanced_http_slow = 1
         self._advanced_top_n_movies = 0
         self._advanced_top_n_shows = 0
+        self.last_inventory_report_path: str | None = None
         self._build_ui()
         self._load_saved_token_labels()
 
@@ -175,6 +179,11 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+        inventory_tab = QWidget()
+        tabs.addTab(inventory_tab, "Inventario Plex")
+        inventory_layout = QVBoxLayout(inventory_tab)
 
         token_group = QGroupBox("1. Token Plex e server")
         token_layout = QGridLayout(token_group)
@@ -210,7 +219,7 @@ class MainWindow(QMainWindow):
         token_layout.addWidget(QLabel("Server Plex"), 4, 0)
         token_layout.addWidget(self.server_combo, 4, 1)
         token_layout.addWidget(self.fetch_libraries_btn, 4, 2)
-        layout.addWidget(token_group)
+        inventory_layout.addWidget(token_group)
 
         libs_group = QGroupBox("2. Librerie da includere")
         libs_layout = QVBoxLayout(libs_group)
@@ -258,7 +267,7 @@ class MainWindow(QMainWindow):
         middle_row = QHBoxLayout()
         middle_row.addWidget(libs_group, 2)
         middle_row.addWidget(options_group, 3)
-        layout.addLayout(middle_row, 1)
+        inventory_layout.addLayout(middle_row, 1)
 
         run_group = QGroupBox("4. Esecuzione")
         run_layout = QVBoxLayout(run_group)
@@ -284,7 +293,71 @@ class MainWindow(QMainWindow):
         run_layout.addWidget(self.status_label)
         run_layout.addWidget(self.eta_label)
         run_layout.addWidget(self.log_box, stretch=1)
-        layout.addWidget(run_group, stretch=3)
+        inventory_layout.addWidget(run_group, stretch=3)
+
+        dup_tab = QWidget()
+        tabs.addTab(dup_tab, "Analisi duplicati")
+        dup_layout = QVBoxLayout(dup_tab)
+        dup_form = QFormLayout()
+        self.dup_inventory_path = QLineEdit()
+        self.dup_pick_inventory_btn = QPushButton("Scegli report...")
+        self.dup_pick_inventory_btn.clicked.connect(self._browse_duplicate_inventory)
+        inv_row = QHBoxLayout()
+        inv_row.addWidget(self.dup_inventory_path, 1)
+        inv_row.addWidget(self.dup_pick_inventory_btn)
+        dup_form.addRow("Report inventario", inv_row)
+        self.dup_output_dir = QLineEdit(str(Path.home() / "Downloads"))
+        self.dup_pick_output_btn = QPushButton("Scegli cartella...")
+        self.dup_pick_output_btn.clicked.connect(self._browse_duplicate_output)
+        out_row = QHBoxLayout()
+        out_row.addWidget(self.dup_output_dir, 1)
+        out_row.addWidget(self.dup_pick_output_btn)
+        dup_form.addRow("Output", out_row)
+        dup_form.addRow("Policy", QLabel(f"Regole integrate: {POLICY_VERSION}"))
+        dup_layout.addLayout(dup_form)
+        self.dup_run_btn = QPushButton("Genera report duplicati")
+        self.dup_run_btn.clicked.connect(self._run_duplicate_analysis)
+        dup_layout.addWidget(self.dup_run_btn)
+        self.dup_log_box = QTextEdit()
+        self.dup_log_box.setReadOnly(True)
+        dup_layout.addWidget(self.dup_log_box, stretch=1)
+
+    def _browse_duplicate_inventory(self) -> None:
+        chosen, _ = QFileDialog.getOpenFileName(self, "Scegli report inventario XLSX", self.dup_inventory_path.text(), "Excel (*.xlsx)")
+        if chosen:
+            self.dup_inventory_path.setText(chosen)
+            if not self.dup_output_dir.text().strip():
+                self.dup_output_dir.setText(str(Path(chosen).parent))
+
+    def _browse_duplicate_output(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Scegli cartella output", self.dup_output_dir.text())
+        if chosen:
+            self.dup_output_dir.setText(chosen)
+
+    def _dup_log(self, text: str) -> None:
+        self.dup_log_box.append(text)
+        self.dup_log_box.verticalScrollBar().setValue(self.dup_log_box.verticalScrollBar().maximum())
+
+    def _run_duplicate_analysis(self) -> None:
+        inventory = self.dup_inventory_path.text().strip()
+        output_dir = self.dup_output_dir.text().strip()
+        if not inventory:
+            QMessageBox.warning(self, "Analisi duplicati", "Seleziona un report inventario XLSX oppure genera prima un inventario dal tab Inventario Plex.")
+            return
+        if not inventory.lower().endswith(".xlsx"):
+            QMessageBox.warning(self, "Analisi duplicati", "L'analisi duplicati richiede un file XLSX.")
+            return
+        if not output_dir:
+            output_dir = str(Path(inventory).parent)
+            self.dup_output_dir.setText(output_dir)
+        self.dup_log_box.clear()
+        try:
+            out_path = analyze_duplicates(Path(inventory), Path(output_dir), log_callback=self._dup_log)
+        except Exception as exc:
+            self._dup_log(str(exc))
+            QMessageBox.critical(self, "Analisi duplicati", str(exc))
+            return
+        QMessageBox.information(self, "Analisi duplicati completata", f"File generato:\n{out_path}")
 
     def _load_saved_token_labels(self) -> None:
         current = self.saved_tokens.currentText()
@@ -527,6 +600,11 @@ class MainWindow(QMainWindow):
             paths.append(result.csv_path)
         if getattr(result, "xlsx_path", None):
             paths.append(result.xlsx_path)
+            self.last_inventory_report_path = result.xlsx_path
+            self.dup_inventory_path.setText(result.xlsx_path)
+            self.dup_output_dir.setText(str(Path(result.xlsx_path).parent))
+        elif getattr(result, "csv_path", None):
+            self._dup_log("Inventario completato solo in CSV: l'analisi duplicati richiede un XLSX")
         self._append_log("Completato.")
         QMessageBox.information(self, "Inventario completato", "File creati:\n" + "\n".join(paths) if paths else "Inventario completato.")
 

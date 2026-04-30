@@ -9,7 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -182,7 +182,6 @@ class MainWindow(QMainWindow):
         self._workers: dict[QThread, QObject] = {}
         self.cancel_event = threading.Event()
         self.inventory_started_at: float | None = None
-        self._busy_loading = False
         self._advanced_duration_output = "HMS"
         self._advanced_debug = False
         self._advanced_skip_short_clips = True
@@ -193,11 +192,6 @@ class MainWindow(QMainWindow):
         self._advanced_top_n_movies = 0
         self._advanced_top_n_shows = 0
         self.last_inventory_report_path: str | None = None
-        self._server_load_timer = QTimer(self)
-        self._server_load_timer.setSingleShot(True)
-        self._server_load_timer.timeout.connect(self._on_server_load_timeout)
-        self._server_load_generation = 0
-        self._active_server_load_generation: int | None = None
         self._build_ui()
         self._load_saved_token_labels()
 
@@ -477,31 +471,19 @@ class MainWindow(QMainWindow):
         return token
 
     def _fetch_servers(self) -> None:
-        if self._busy_loading:
-            return
         token = self._selected_token()
         if not token:
             QMessageBox.warning(self, "Server", "Inserisci o seleziona un token Plex.")
             return
         self._append_log("Carico server Plex...")
-        self._append_log("Contatto plex.tv...")
-        self._server_load_generation += 1
-        generation = self._server_load_generation
-        self._active_server_load_generation = generation
-        self._server_load_timer.start(15000)
-        self._run_loading_background(
+        self._run_background(
             lambda: list_plex_servers(token),
-            lambda servers: self._servers_loaded(servers, generation),
+            self._servers_loaded,
             "Caricamento server fallito",
-            on_error=lambda tb: self._servers_failed(tb, generation),
+            on_error=self._servers_failed,
         )
 
-    def _servers_loaded(self, servers: list[str], generation: int) -> None:
-        if generation != self._active_server_load_generation:
-            self._append_log("Risultato caricamento server ignorato (operazione scaduta o superata).")
-            return
-        self._server_load_timer.stop()
-        self._active_server_load_generation = None
+    def _servers_loaded(self, servers: list[str]) -> None:
         self.server_combo.clear()
         self.server_combo.addItems(servers)
         if not servers:
@@ -511,15 +493,13 @@ class MainWindow(QMainWindow):
         self._append_log(f"Server trovati: {len(servers)}")
 
     def _fetch_libraries(self) -> None:
-        if self._busy_loading:
-            return
         token = self._selected_token()
         server = self.server_combo.currentText().strip()
         if not token or not server:
             QMessageBox.warning(self, "Librerie", "Inserisci token e seleziona un server Plex.")
             return
         self._append_log(f"Carico librerie da {server}...")
-        self._run_loading_background(
+        self._run_background(
             lambda: list_libraries(token, server),
             self._libraries_loaded,
             "Caricamento librerie fallito",
@@ -696,29 +676,6 @@ class MainWindow(QMainWindow):
         self._append_log(tb)
         QMessageBox.critical(self, "Errore", "Inventario fallito. Vedi log.")
 
-    def _run_loading_background(
-        self,
-        fn: Callable[[], Any],
-        on_success: Callable[[Any], None],
-        error_title: str,
-        on_error: Callable[[str], None] | None = None,
-    ) -> None:
-        self._set_loading_state(True)
-
-        def _on_success(result: Any) -> None:
-            self._set_loading_state(False)
-            on_success(result)
-
-        def _on_error(tb: str) -> None:
-            self._set_loading_state(False)
-            if on_error is not None:
-                on_error(tb)
-                return
-            message = tb.splitlines()[-1] if tb.splitlines() else tb
-            QMessageBox.critical(self, error_title, message)
-
-        self._run_background(fn, _on_success, error_title, on_error=_on_error)
-
     def _run_background(
         self,
         fn: Callable[[], Any],
@@ -750,13 +707,7 @@ class MainWindow(QMainWindow):
             return
         QMessageBox.critical(self, title, tb.splitlines()[-1] if tb.splitlines() else tb)
 
-    def _servers_failed(self, tb: str, generation: int | None = None) -> None:
-        if generation is not None and generation != self._active_server_load_generation:
-            self._append_log("Errore caricamento server ignorato (operazione scaduta o superata).")
-            return
-        if generation is not None:
-            self._server_load_timer.stop()
-            self._active_server_load_generation = None
+    def _servers_failed(self, tb: str) -> None:
         self.server_combo.clear()
         self._append_log(tb)
         self._append_log("Timeout caricamento server" if "timeout" in tb.lower() else "Errore caricamento server")
@@ -769,24 +720,6 @@ class MainWindow(QMainWindow):
         self.library_list.clear()
         message = tb.splitlines()[-1] if tb.splitlines() else tb
         QMessageBox.warning(self, "Librerie", f"Impossibile caricare le librerie.\n{message}")
-
-    def _set_loading_state(self, loading: bool) -> None:
-        self._busy_loading = loading
-        self.fetch_servers_btn.setEnabled(not loading)
-        self.fetch_libraries_btn.setEnabled(not loading)
-
-    def _on_server_load_timeout(self) -> None:
-        if self._active_server_load_generation is None:
-            return
-        self._append_log("Timeout caricamento server")
-        self._append_log("WARNING: watchdog UI: caricamento server oltre 15 secondi, ripristino stato.")
-        self._active_server_load_generation = None
-        self._set_loading_state(False)
-        QMessageBox.warning(
-            self,
-            "Server",
-            "Timeout nel caricamento server Plex. Verifica connessione, token o stato di plex.tv e riprova.",
-        )
 
     @Slot(str)
     def _append_log(self, text: str) -> None:

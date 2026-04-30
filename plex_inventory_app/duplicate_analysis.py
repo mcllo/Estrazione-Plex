@@ -117,6 +117,7 @@ def _duration_cluster_movie(group: pd.DataFrame) -> pd.Series:
 def analyze_duplicates(inventory_path: Path, output_dir: Path, log_callback: Callable[[str], None] | None = None) -> Path:
     log = log_callback or (lambda _msg: None)
     wb = load_inventory_workbook(inventory_path)
+    log("Workbook caricato")
     for w in wb.warnings:
         log(f"WARNING: {w}")
     df = wb.library.copy()
@@ -173,6 +174,7 @@ def analyze_duplicates(inventory_path: Path, output_dir: Path, log_callback: Cal
                     action = "DELETE_PROPOSED"
                     reason = ["vantaggio residuo audio EN sul file da valutare", "resta un vantaggio secondario audio EN"]
             rows.append({**row.to_dict(), "title_or_episode": row.get("episode_title") or row.get("title_or_series"), "file_path": row.get("file"), "keep_reference": keeper.get("file"), "final_action": action, "reason": " ; ".join(reason)})
+    log(f"Gruppi duplicati trovati: {dup_groups}")
     out_df = pd.DataFrame(rows)
     if out_df.empty:
         out_df = pd.DataFrame(columns=[
@@ -182,8 +184,20 @@ def analyze_duplicates(inventory_path: Path, output_dir: Path, log_callback: Cal
         ])
     if not out_df.empty:
         out_df["group_status"] = out_df.groupby(["group_key", "cluster_index"])["final_action"].transform(lambda s: "MANUALE" if (s=="REVIEW_MANUAL").any() else ("CONSERVA" if (s=="KEEP").sum()>1 else "AUTO_GROUP"))
-    summary = pd.DataFrame({"metrica":["policy_version","policy_coverage_note","inventory_file","generated_at","total_rows","duplicate_groups","keep_count","delete_safe_count","delete_proposed_count","manual_count","conserva_count","debug_streams_used","debug_xml_used"],"valore":[POLICY_VERSION,"prima integrazione: alcune regole avanzate ancora parziali",str(inventory_path),datetime.now().isoformat(timespec="seconds"),len(df),dup_groups,int((out_df.final_action=="KEEP").sum()) if not out_df.empty else 0,int((out_df.final_action=="DELETE_SAFE").sum()) if not out_df.empty else 0,int((out_df.final_action=="DELETE_PROPOSED").sum()) if not out_df.empty else 0,int((out_df.final_action=="REVIEW_MANUAL").sum()) if not out_df.empty else 0,int((out_df.final_action=="KEEP").sum()) if not out_df.empty else 0,wb.debug_streams is not None,wb.debug_xml is not None]})
+    if dup_groups == 0:
+        log("Nessun gruppo duplicato trovato nel report selezionato.")
+    keep_count = int((out_df.final_action == "KEEP").sum()) if not out_df.empty else 0
+    delete_safe_count = int((out_df.final_action == "DELETE_SAFE").sum()) if not out_df.empty else 0
+    delete_proposed_count = int((out_df.final_action == "DELETE_PROPOSED").sum()) if not out_df.empty else 0
+    manual_count = int((out_df.final_action == "REVIEW_MANUAL").sum()) if not out_df.empty else 0
+    log(
+        "Conteggi finali - "
+        f"KEEP: {keep_count}, DELETE_SAFE: {delete_safe_count}, "
+        f"DELETE_PROPOSED: {delete_proposed_count}, REVIEW_MANUAL: {manual_count}"
+    )
+    summary = pd.DataFrame({"metrica":["policy_version","policy_coverage_note","inventory_file","generated_at","total_rows","duplicate_groups","keep_count","delete_safe_count","delete_proposed_count","manual_count","conserva_count","debug_streams_used","debug_xml_used"],"valore":[POLICY_VERSION,"prima integrazione: alcune regole avanzate ancora parziali",str(inventory_path),datetime.now().isoformat(timespec="seconds"),len(df),dup_groups,keep_count,delete_safe_count,delete_proposed_count,manual_count,keep_count,wb.debug_streams is not None,wb.debug_xml is not None]})
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"report_duplicati_plex_classificato_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     write_duplicate_report(out_path, summary, out_df)
+    log(f"Report scritto: {out_path}")
     return out_path

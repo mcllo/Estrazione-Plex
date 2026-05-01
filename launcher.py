@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -15,6 +16,14 @@ import plex_inventory_app.core as core_mod
 from plex_inventory_app.debug_wide_patch import apply as apply_debug_wide_patch
 
 _original_init = app_mod.MainWindow.__init__
+
+# Timeout/retry più adatti a Plex Media Server su Nvidia Shield + dischi USB.
+# Evitano falsi timeout quando la Shield, Plex o i dischi esterni rispondono lentamente.
+RESOURCE_CONNECT_TIMEOUT_S = 12
+FALLBACK_CONNECT_TIMEOUT_S = 12
+THREAD_CONNECT_TIMEOUT_S = 12
+XML_RETRY_ATTEMPTS = 4
+XML_RETRY_BACKOFF_S = 0.75
 
 try:
     requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
@@ -103,7 +112,7 @@ def _make_plex(base_url: str, token: str) -> PlexServer:
     session = requests.Session()
     session.verify = False
     try:
-        return PlexServer(base_url, token, timeout=8, session=session)
+        return PlexServer(base_url, token, timeout=FALLBACK_CONNECT_TIMEOUT_S, session=session)
     except TypeError:
         return PlexServer(base_url, token, session=session)
 
@@ -115,9 +124,9 @@ def _connect_resource_colab_plus(token: str, server_name: str):
 
     attempts: list[str] = []
 
-    # 1) Same first attempt as the working Colab script.
+    # 1) Same first attempt as the working Colab script, but with a Shield-friendly timeout.
     try:
-        return resource, resource.connect(timeout=6)
+        return resource, resource.connect(timeout=RESOURCE_CONNECT_TIMEOUT_S)
     except Exception as exc:
         attempts.append("resource.connect: " + _redact(repr(exc), account_token))
 
@@ -152,8 +161,56 @@ def _connect_main_colab_plus(token: str, server_name: str):
     return plex
 
 
+def _get_plex_for_thread_shield_friendly(self):
+    p = getattr(self.thread_local, "plex", None)
+    if p is not None:
+        return p
+    if self.baseurl:
+        try:
+            try:
+                p = PlexServer(self.baseurl, self.config.token, timeout=THREAD_CONNECT_TIMEOUT_S)
+            except TypeError:
+                p = PlexServer(self.baseurl, self.config.token)
+        except Exception:
+            p = self.plex_main
+    else:
+        p = self.plex_main
+    self.thread_local.plex = p
+    return p
+
+
+def _fetch_item_xml_bundle_shield_friendly(self, item):
+    rk = str(getattr(item, "ratingKey", "") or "")
+    if rk:
+        with self.mtx:
+            if rk in self.xml_bundle_cache:
+                self.metrics["xml_cache_hit"] += 1
+                return self.xml_bundle_cache[rk]
+    last_error = None
+    for attempt in range(XML_RETRY_ATTEMPTS):
+        if self.cancel_event.is_set():
+            return None
+        try:
+            path = self._build_item_xml_query(item)
+            with self.plex_http_guard():
+                xml = self.get_plex_for_thread()._server.query(path)
+            bundle = self._parse_xml_bundle(xml)
+            with self.mtx:
+                self.metrics["xml_fetch"] += 1
+                if rk:
+                    self.xml_bundle_cache[rk] = bundle
+            return bundle
+        except Exception as exc:
+            last_error = exc
+            time.sleep(XML_RETRY_BACKOFF_S * (2 ** attempt))
+    self.log(f"[WARN] XML non letto per {getattr(item, 'title', '')}: {last_error!r}")
+    return None
+
+
 core_mod._connect_resource = _connect_resource_colab_plus
 core_mod._connect_main = _connect_main_colab_plus
+core_mod.InventoryRunner.get_plex_for_thread = _get_plex_for_thread_shield_friendly
+core_mod.InventoryRunner.fetch_item_xml_bundle = _fetch_item_xml_bundle_shield_friendly
 apply_debug_wide_patch(core_mod)
 
 

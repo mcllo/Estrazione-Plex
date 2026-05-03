@@ -217,6 +217,13 @@ apply_debug_wide_patch(core_mod)
 def _init_with_worker_refs(self):
     _original_init(self)
     self._workers = []
+    try:
+        self.resize(1250, 900)
+        self.log_box.setMinimumHeight(430)
+        self.log_box.setVerticalScrollBarPolicy(app_mod.Qt.ScrollBarAlwaysOn)
+        self.log_box.setHorizontalScrollBarPolicy(app_mod.Qt.ScrollBarAsNeeded)
+    except Exception:
+        pass
 
 
 def _cleanup_refs(self, thread, worker):

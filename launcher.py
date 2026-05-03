@@ -218,8 +218,11 @@ def _init_with_worker_refs(self):
     _original_init(self)
     self._workers = []
     try:
-        self.resize(1250, 900)
-        self.log_box.setMinimumHeight(430)
+        self.resize(1280, 900)
+        self.library_list.setMaximumHeight(120)
+        self.library_list.setMinimumHeight(90)
+        self.log_box.setMinimumHeight(520)
+        self.log_box.setLineWrapMode(app_mod.QTextEdit.NoWrap)
         self.log_box.setVerticalScrollBarPolicy(app_mod.Qt.ScrollBarAlwaysOn)
         self.log_box.setHorizontalScrollBarPolicy(app_mod.Qt.ScrollBarAsNeeded)
     except Exception:

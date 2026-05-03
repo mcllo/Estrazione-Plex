@@ -22,11 +22,9 @@ if (-not (Test-Path ".venv\Scripts\pyinstaller.exe")) {
 Write-Host "Compilo con PyInstaller senza --clean..."
 .\.venv\Scripts\pyinstaller.exe --noconfirm PlexInventory.spec
 
-Write-Host "Creo ZIP fast..."
-Compress-Archive -Force -Path "dist\PlexInventory\*" -DestinationPath "PlexInventory-windows-portable-fast.zip"
-
 Write-Host ""
 Write-Host "Build FAST completata."
 Write-Host "EXE: $ProjectRoot\dist\PlexInventory\PlexInventory.exe"
-Write-Host "ZIP: $ProjectRoot\PlexInventory-windows-portable-fast.zip"
+Write-Host ""
+Write-Host "ZIP non creato. Quando ti serve condividere il programma usa: .\package-windows.ps1"
 Write-Host "Per una build pulita usa: .\build-windows-local.ps1"

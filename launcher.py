@@ -265,6 +265,8 @@ def _start_inventory_fixed(self) -> None:
 
     self.cancel_event = threading.Event()
     self.progress.setValue(0)
+    self.inventory_started_at = time.monotonic()
+    self.eta_label.setText("Tempo: 00:00:00 | ETA residua: calcolo...")
     self.log_box.clear()
     self._append_log("Avvio inventario...")
     self._append_log(f"Server: {config.server_name}")

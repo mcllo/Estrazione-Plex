@@ -232,13 +232,19 @@ def _cleanup_refs(self, thread, worker):
         pass
 
 
-def _run_background_fixed(self, fn: Callable[[], Any], on_success: Callable[[Any], None], error_title: str) -> None:
+def _run_background_fixed(
+    self,
+    fn: Callable[[], Any],
+    on_success: Callable[[Any], None],
+    error_title: str,
+    on_error: Callable[[str], None] | None = None,
+) -> None:
     thread = QThread(self)
     worker = app_mod.GenericWorker(fn)
     worker.moveToThread(thread)
     thread.started.connect(worker.run)
     worker.finished.connect(on_success)
-    worker.failed.connect(lambda tb: self._background_failed(error_title, tb))
+    worker.failed.connect(lambda tb: self._background_failed(error_title, tb, on_error=on_error))
     worker.finished.connect(thread.quit)
     worker.failed.connect(thread.quit)
     worker.finished.connect(worker.deleteLater)

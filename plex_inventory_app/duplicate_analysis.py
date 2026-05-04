@@ -31,21 +31,33 @@ def _parse_duration_seconds(value: str) -> int:
     return p[0] * 3600 + p[1] * 60 + p[2] if len(p) == 3 else 0
 
 
-def load_inventory_workbook(path: Path) -> InventoryWorkbook:
-    sheets = pd.read_excel(path, sheet_name=None)
+def load_inventory_workbook(path: Path, log_callback: Callable[[str], None] | None = None) -> InventoryWorkbook:
+    log = log_callback or (lambda _msg: None)
+    log("Apro workbook...")
     warnings: list[str] = []
-    if "Library" not in sheets:
-        raise ValueError("Workbook inventario non valido: manca il foglio 'Library'.")
-    library = sheets["Library"].copy()
+    with pd.ExcelFile(path) as workbook:
+        sheet_names = list(workbook.sheet_names)
+        log(f"Fogli trovati: {', '.join(sheet_names)}")
+        if "Library" not in sheet_names:
+            raise ValueError("Workbook inventario non valido: manca il foglio 'Library'.")
+        log("Lettura foglio Library...")
+        library = workbook.parse("Library").copy()
+        debug_xml = None
+        debug_streams = None
+        if "Debug_XML" in sheet_names:
+            log("Lettura Debug_XML...")
+            debug_xml = workbook.parse("Debug_XML")
+        if "Debug_Streams" in sheet_names:
+            log("Lettura Debug_Streams...")
+            debug_streams = workbook.parse("Debug_Streams")
     missing = [c for c in REQUIRED_COLUMNS if c not in library.columns]
     if missing:
         raise ValueError(f"Colonne obbligatorie mancanti nel foglio Library: {', '.join(missing)}")
-    debug_xml = sheets.get("Debug_XML")
-    debug_streams = sheets.get("Debug_Streams")
     if debug_streams is None:
         warnings.append("Debug_Streams non presente: uso fallback Library/Debug_XML")
     if debug_xml is None:
         warnings.append("Debug_XML non presente: uso fallback Library")
+    log("Workbook letto correttamente")
     return InventoryWorkbook(library=library, debug_xml=debug_xml, debug_streams=debug_streams, warnings=warnings)
 
 
@@ -116,7 +128,7 @@ def _duration_cluster_movie(group: pd.DataFrame) -> pd.Series:
 
 def analyze_duplicates(inventory_path: Path, output_dir: Path, log_callback: Callable[[str], None] | None = None) -> Path:
     log = log_callback or (lambda _msg: None)
-    wb = load_inventory_workbook(inventory_path)
+    wb = load_inventory_workbook(inventory_path, log_callback=log)
     log("Workbook caricato")
     for w in wb.warnings:
         log(f"WARNING: {w}")

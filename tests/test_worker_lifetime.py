@@ -39,7 +39,7 @@ def test_run_duplicate_analysis_tracks_worker(tmp_path: Path, monkeypatch):
     win.dup_inventory_path.setText(str(xlsx))
     win.dup_output_dir.setText(str(tmp_path))
 
-    monkeypatch.setattr("plex_inventory_app.app.QThread.start", lambda self: None)
+    monkeypatch.setattr("plex_inventory_app.main_window.QThread.start", lambda self: None)
 
     before = len(win._workers)
     win._run_duplicate_analysis()

@@ -1,26 +1,21 @@
 $ErrorActionPreference = "Stop"
+. "$PSScriptRoot\windows-build-common.ps1"
 
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $ProjectRoot
+$ProjectRoot = Get-ProjectRoot
+Set-ProjectLocation -ProjectRoot $ProjectRoot
 
 Write-Host "== PlexInventory FAST local build =="
 Write-Host "Project: $ProjectRoot"
 
-if (-not (Test-Path ".venv\Scripts\python.exe")) {
-    Write-Host "Creo ambiente virtuale .venv con Python 3.11..."
-    py -3.11 -m venv .venv
-    .\.venv\Scripts\python.exe -m pip install --upgrade pip
-    .\.venv\Scripts\pip.exe install -r requirements.txt
-}
+Ensure-Venv -ProjectRoot $ProjectRoot
+$tools = Get-VenvTools -ProjectRoot $ProjectRoot
 
-if (-not (Test-Path ".venv\Scripts\pyinstaller.exe")) {
-    Write-Host "Installo dipendenze mancanti..."
-    .\.venv\Scripts\python.exe -m pip install --upgrade pip
-    .\.venv\Scripts\pip.exe install -r requirements.txt
+if (-not (Test-Path $tools.PyInstaller)) {
+    Install-Dependencies -VenvPython $tools.Python -VenvPip $tools.Pip
 }
 
 Write-Host "Compilo con PyInstaller senza --clean..."
-.\.venv\Scripts\pyinstaller.exe --noconfirm PlexInventory.spec
+Build-Executable -PyInstallerPath $tools.PyInstaller
 
 Write-Host ""
 Write-Host "Build FAST completata."

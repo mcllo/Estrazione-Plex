@@ -1,45 +1,24 @@
 $ErrorActionPreference = "Stop"
+. "$PSScriptRoot\windows-build-common.ps1"
 
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $ProjectRoot
+$ProjectRoot = Get-ProjectRoot
+Set-ProjectLocation -ProjectRoot $ProjectRoot
 
 Write-Host "== PlexInventory local build =="
 Write-Host "Project: $ProjectRoot"
 
-$PythonLauncher = Get-Command py -ErrorAction SilentlyContinue
-if ($null -ne $PythonLauncher) {
-    $PythonCmd = "py -3.11"
-} else {
-    $PythonLauncher = Get-Command python -ErrorAction SilentlyContinue
-    if ($null -eq $PythonLauncher) {
-        throw "Python non trovato. Installa Python 3.11 e riprova."
-    }
-    $PythonCmd = "python"
-}
+Ensure-Venv -ProjectRoot $ProjectRoot
+$tools = Get-VenvTools -ProjectRoot $ProjectRoot
 
-if (-not (Test-Path ".venv\Scripts\python.exe")) {
-    Write-Host "Creo ambiente virtuale .venv..."
-    Invoke-Expression "$PythonCmd -m venv .venv"
-}
-
-$VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-$VenvPip = Join-Path $ProjectRoot ".venv\Scripts\pip.exe"
-$VenvPyInstaller = Join-Path $ProjectRoot ".venv\Scripts\pyinstaller.exe"
-
-Write-Host "Aggiorno pip e dipendenze..."
-& $VenvPython -m pip install --upgrade pip
-& $VenvPip install -r requirements.txt
+Install-Dependencies -VenvPython $tools.Python -VenvPip $tools.Pip
 
 Write-Host "Pulizia build precedente..."
-if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
-if (Test-Path "dist\PlexInventory") { Remove-Item "dist\PlexInventory" -Recurse -Force }
-if (Test-Path "PlexInventory-windows-portable.zip") { Remove-Item "PlexInventory-windows-portable.zip" -Force }
+Remove-PreviousArtifacts
 
 Write-Host "Compilo con PyInstaller..."
-& $VenvPyInstaller --clean --noconfirm PlexInventory.spec
+Build-Executable -PyInstallerPath $tools.PyInstaller -Clean
 
-Write-Host "Creo ZIP portabile..."
-Compress-Archive -Force -Path "dist\PlexInventory\*" -DestinationPath "PlexInventory-windows-portable.zip"
+Package-PortableZip
 
 Write-Host ""
 Write-Host "Build completata."

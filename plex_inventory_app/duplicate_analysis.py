@@ -33,7 +33,7 @@ def _parse_duration_seconds(value: str) -> int:
 
 def load_inventory_workbook(path: Path, log_callback: Callable[[str], None] | None = None) -> InventoryWorkbook:
     log = log_callback or (lambda _msg: None)
-    log("Apro workbook...")
+    log(f"Apro workbook: {path}")
     warnings: list[str] = []
     with pd.ExcelFile(path) as workbook:
         sheet_names = list(workbook.sheet_names)

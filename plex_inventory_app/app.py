@@ -96,7 +96,8 @@ class DuplicateAnalysisWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            self.log.emit("Avvio analisi motore duplicati...")
+            self.log.emit("Thread analisi duplicati avviato")
+            self.log.emit("Chiamo analyze_duplicates...")
             out = analyze_duplicates(Path(self.inventory_path), Path(self.output_dir), log_callback=lambda m: self.log.emit(m))
             self.finished.emit(out)
         except Exception:
@@ -179,7 +180,7 @@ class MainWindow(QMainWindow):
         self.resize(1080, 820)
         self.token_store = TokenStore()
         self._threads: list[QThread] = []
-        self._workers: dict[QThread, QObject] = {}
+        self._workers: list[QObject] = []
         self.cancel_event = threading.Event()
         self.inventory_started_at: float | None = None
         self._advanced_duration_output = "HMS"
@@ -362,6 +363,12 @@ class MainWindow(QMainWindow):
         self.dup_log_box.append(text)
         self.dup_log_box.verticalScrollBar().setValue(self.dup_log_box.verticalScrollBar().maximum())
 
+    def _track_worker(self, thread: QThread, worker: QObject) -> None:
+        self._threads.append(thread)
+        self._workers.append(worker)
+        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        thread.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+
     def _run_duplicate_analysis(self) -> None:
         inventory = self.dup_inventory_path.text().strip()
         output_dir = self.dup_output_dir.text().strip()
@@ -384,6 +391,7 @@ class MainWindow(QMainWindow):
         self.dup_pick_inventory_btn.setEnabled(False)
         self.dup_pick_output_btn.setEnabled(False)
         self.dup_progress.setRange(0, 0)
+        self._dup_log("Creo worker analisi duplicati...")
         thread = QThread(self)
         worker = DuplicateAnalysisWorker(inventory, output_dir)
         worker.moveToThread(thread)
@@ -396,8 +404,8 @@ class MainWindow(QMainWindow):
         worker.finished.connect(worker.deleteLater)
         worker.failed.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        self._threads.append(thread)
-        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        self._track_worker(thread, worker)
+        self._dup_log("Avvio thread analisi duplicati...")
         thread.start()
 
     @Slot(object)
@@ -619,8 +627,7 @@ class MainWindow(QMainWindow):
         worker.finished.connect(worker.deleteLater)
         worker.failed.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        self._threads.append(thread)
-        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
+        self._track_worker(thread, worker)
         thread.start()
 
     def _cancel_inventory(self) -> None:
@@ -694,10 +701,7 @@ class MainWindow(QMainWindow):
         worker.finished.connect(worker.deleteLater)
         worker.failed.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        self._threads.append(thread)
-        self._workers[thread] = worker
-        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
-        thread.finished.connect(lambda: self._workers.pop(thread, None))
+        self._track_worker(thread, worker)
         thread.start()
 
     def _background_failed(self, title: str, tb: str, on_error: Callable[[str], None] | None = None) -> None:

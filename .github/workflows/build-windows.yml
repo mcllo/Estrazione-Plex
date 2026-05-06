@@ -39,32 +39,31 @@ jobs:
           }
           Compress-Archive -Path dist\PlexInventory\* -DestinationPath PlexInventory-windows-portable.zip
 
-      - name: Delete previous Windows portable artifacts
+      - name: Delete previous artifacts
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
           $repo = "${{ github.repository }}"
-          $artifactName = "PlexInventory-windows-portable"
           $headers = @{
             Authorization = "Bearer $env:GH_TOKEN"
             Accept = "application/vnd.github+json"
             "X-GitHub-Api-Version" = "2022-11-28"
           }
 
-          $url = "https://api.github.com/repos/$repo/actions/artifacts?per_page=100&name=$artifactName"
+          $url = "https://api.github.com/repos/$repo/actions/artifacts?per_page=100"
           $response = Invoke-RestMethod -Method Get -Uri $url -Headers $headers
           $count = 0
 
           foreach ($artifact in $response.artifacts) {
-            Write-Host "Deleting old artifact $($artifact.id): $($artifact.name) ($($artifact.size_in_bytes) bytes)"
+            Write-Host "Deleting artifact $($artifact.id): $($artifact.name) ($($artifact.size_in_bytes) bytes)"
             $deleteUrl = "https://api.github.com/repos/$repo/actions/artifacts/$($artifact.id)"
             Invoke-RestMethod -Method Delete -Uri $deleteUrl -Headers $headers
             $count += 1
           }
 
-          Write-Host "Deleted $count previous artifact(s)."
+          Write-Host "Deleted $count artifact(s)."
 
       - name: Upload artifact
         # Keep retention short to avoid exhausting GitHub Actions artifact storage.

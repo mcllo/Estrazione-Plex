@@ -135,17 +135,17 @@ def analyze_duplicates(
     log = log_callback or (lambda _msg: None)
     progress = progress_callback or (lambda _done, _total, _msg: None)
     done_units = 0
-    total_units = 1
-    progress(done_units, total_units, "Apertura workbook inventario")
+    total_units = 0
     wb = load_inventory_workbook(inventory_path, log_callback=log)
-    done_units += 1
-    progress(done_units, total_units, "Workbook letto")
     log("Workbook caricato")
     for w in wb.warnings:
         log(f"WARNING: {w}")
     df = wb.library.copy()
     log(f"Righe lette: {len(df)}")
     total_rows = len(df)
+    total_units = 6 + total_rows + 1 + 1 + 2
+    done_units += 1
+    progress(done_units, total_units, "Workbook letto")
     progress(done_units, total_units, "Preparazione analisi duplicati")
 
     log("Normalizzazione titoli e percorsi...")
@@ -183,14 +183,14 @@ def analyze_duplicates(
     df["group_key"] = df.apply(build_group_key, axis=1)
     df["cluster_index"] = 0
     movie_groups = [group for _, group in df.groupby("group_key") if str(group.iloc[0].get("type", "")).lower() == "movie"]
-    clustered = list(df.groupby(["group_key", "cluster_index"]))
-    total_units = 6 + total_rows + max(len(movie_groups), 1) + max(len(clustered), 1) + 2
+    total_units = 6 + total_rows + max(len(movie_groups), 1) + 1 + 2
+    done_units = min(done_units, total_units)
     progress(done_units, total_units, "Creazione gruppi duplicati")
 
     log("Split gruppi film per durata...")
     total_movie_groups = len(movie_groups)
     for done, group in enumerate(movie_groups, start=1):
-        done_units += 1
+        done_units = min(done_units + 1, total_units)
         if str(group.iloc[0].get("type", "")).lower() == "movie":
             c = _duration_cluster_movie(group)
             for row_idx, cluster_idx in c.items():
@@ -199,15 +199,17 @@ def analyze_duplicates(
             log(f"Split durata film: {done}/{total_movie_groups} gruppi")
             progress(done_units, total_units, "Split gruppi film per durata")
     if total_movie_groups == 0:
-        done_units += 1
+        done_units = min(done_units + 1, total_units)
         progress(done_units, total_units, "Split gruppi film per durata")
     rows = []
     dup_groups = 0
     log("Classificazione gruppi duplicati...")
     clustered = list(df.groupby(["group_key", "cluster_index"]))
     total_clusters = len(clustered)
+    total_units = 6 + total_rows + max(len(movie_groups), 1) + max(total_clusters, 1) + 2
+    done_units = min(done_units, total_units)
     for processed, ((_, _), cluster) in enumerate(clustered, start=1):
-        done_units += 1
+        done_units = min(done_units + 1, total_units)
         if processed % 25 == 0 or processed == total_clusters:
             log(f"Classificazione gruppi: {processed}/{total_clusters}")
             progress(done_units, total_units, "Classificazione gruppi duplicati")
@@ -271,7 +273,7 @@ def analyze_duplicates(
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"report_duplicati_plex_classificato_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     log("Scrittura workbook finale...")
-    done_units += 1
+    done_units = min(done_units + 1, total_units)
     progress(done_units, total_units, "Scrittura workbook finale")
     write_duplicate_report(out_path, summary, out_df)
     log(f"Report scritto: {out_path}")

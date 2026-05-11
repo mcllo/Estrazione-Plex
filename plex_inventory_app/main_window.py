@@ -6,7 +6,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QThread, Qt, Slot
+from PySide6.QtCore import QObject, QThread, Qt, QUrl, Slot
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         self._advanced_top_n_movies = 0
         self._advanced_top_n_shows = 0
         self.last_inventory_report_path: str | None = None
+        self.dup_started_at: float | None = None
         self._build_ui()
         self._load_saved_token_labels()
 
@@ -207,6 +209,8 @@ class MainWindow(QMainWindow):
         self.dup_progress.setRange(0, 100)
         self.dup_progress.setValue(0)
         dup_layout.addWidget(self.dup_progress)
+        self.dup_eta_label = QLabel("Tempo: 00:00:00 | ETA residua: calcolo...")
+        dup_layout.addWidget(self.dup_eta_label)
         self.dup_log_box = QTextEdit()
         self.dup_log_box.setReadOnly(True)
         dup_layout.addWidget(self.dup_log_box, stretch=1)
@@ -254,13 +258,17 @@ class MainWindow(QMainWindow):
         self.dup_run_btn.setText("Analisi in corso...")
         self.dup_pick_inventory_btn.setEnabled(False)
         self.dup_pick_output_btn.setEnabled(False)
-        self.dup_progress.setRange(0, 0)
+        self.dup_started_at = time.monotonic()
+        self.dup_progress.setRange(0, 100)
+        self.dup_progress.setValue(0)
+        self.dup_eta_label.setText("Tempo: 00:00:00 | ETA residua: calcolo...")
         self._dup_log("Creo worker analisi duplicati...")
         thread = QThread(self)
         worker = DuplicateAnalysisWorker(inventory, output_dir)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.log.connect(self._dup_log)
+        worker.progress.connect(self._on_duplicate_progress)
         worker.finished.connect(self._duplicate_finished)
         worker.failed.connect(self._duplicate_failed)
         worker.finished.connect(thread.quit)
@@ -274,24 +282,51 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _duplicate_finished(self, out_path: Any) -> None:
+        elapsed = self._duplicate_elapsed_seconds()
+        self.dup_started_at = None
         self.dup_run_btn.setEnabled(True)
         self.dup_run_btn.setText("Genera report duplicati")
         self.dup_pick_inventory_btn.setEnabled(True)
         self.dup_pick_output_btn.setEnabled(True)
         self.dup_progress.setRange(0, 100)
         self.dup_progress.setValue(100)
+        self.dup_eta_label.setText(f"Completato in {self._fmt_duration(elapsed)}")
         QMessageBox.information(self, "Analisi duplicati completata", f"File generato:\n{out_path}")
 
     @Slot(str)
     def _duplicate_failed(self, tb: str) -> None:
+        elapsed = self._duplicate_elapsed_seconds()
+        self.dup_started_at = None
         self.dup_run_btn.setEnabled(True)
         self.dup_run_btn.setText("Genera report duplicati")
         self.dup_pick_inventory_btn.setEnabled(True)
         self.dup_pick_output_btn.setEnabled(True)
         self.dup_progress.setRange(0, 100)
         self.dup_progress.setValue(0)
+        self.dup_eta_label.setText(f"Tempo: {self._fmt_duration(elapsed)} | ETA residua: --")
         self._dup_log(tb)
         QMessageBox.critical(self, "Analisi duplicati", tb.splitlines()[-1] if tb.splitlines() else tb)
+
+    @Slot(int, int, str)
+    def _on_duplicate_progress(self, done: int, total: int, msg: str) -> None:
+        if total <= 0:
+            self.dup_progress.setValue(0)
+        else:
+            self.dup_progress.setValue(int(done / max(total, 1) * 100))
+        elapsed = self._duplicate_elapsed_seconds()
+        if done <= 0 or total <= 0:
+            self.dup_eta_label.setText(f"Tempo: {self._fmt_duration(elapsed)} | ETA residua: calcolo...")
+            return
+        avg_seconds_per_unit = elapsed / max(done, 1)
+        eta_remaining = max(0.0, (total - done) * avg_seconds_per_unit)
+        self.dup_eta_label.setText(
+            f"Tempo: {self._fmt_duration(elapsed)} | ETA residua: {self._fmt_duration(eta_remaining)}"
+        )
+
+    def _duplicate_elapsed_seconds(self) -> float:
+        if self.dup_started_at is None:
+            return 0.0
+        return max(0.0, time.monotonic() - self.dup_started_at)
 
     def _load_saved_token_labels(self) -> None:
         current = self.saved_tokens.currentText()
@@ -536,6 +571,23 @@ class MainWindow(QMainWindow):
             self._dup_log("Inventario completato solo in CSV: l'analisi duplicati richiede un XLSX")
         self._append_log("Completato.")
         QMessageBox.information(self, "Inventario completato", "File creati:\n" + "\n".join(paths) if paths else "Inventario completato.")
+        self._prompt_open_inventory_file(result)
+
+    def _prompt_open_inventory_file(self, result: Any) -> None:
+        report_path = getattr(result, "xlsx_path", None) or getattr(result, "csv_path", None)
+        if not report_path:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Aprire inventario",
+            "Inventario creato. Vuoi aprirlo ora?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path))):
+            QMessageBox.warning(self, "Apri inventario", "Non sono riuscito ad aprire il file automaticamente.")
 
     @Slot(str)
     def _inventory_failed(self, tb: str) -> None:

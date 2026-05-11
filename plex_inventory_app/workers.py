@@ -53,6 +53,7 @@ class InventoryWorker(QObject):
 
 
 class DuplicateAnalysisWorker(QObject):
+    progress = Signal(int, int, str)
     log = Signal(str)
     finished = Signal(object)
     failed = Signal(str)
@@ -67,7 +68,12 @@ class DuplicateAnalysisWorker(QObject):
         try:
             self.log.emit("Thread analisi duplicati avviato")
             self.log.emit("Chiamo analyze_duplicates...")
-            out = analyze_duplicates(Path(self.inventory_path), Path(self.output_dir), log_callback=lambda m: self.log.emit(m))
+            out = analyze_duplicates(
+                Path(self.inventory_path),
+                Path(self.output_dir),
+                log_callback=lambda m: self.log.emit(m),
+                progress_callback=lambda done, total, msg: self.progress.emit(done, total, msg),
+            )
             self.finished.emit(out)
         except Exception:
             self.failed.emit(traceback.format_exc())

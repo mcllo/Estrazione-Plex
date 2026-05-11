@@ -126,41 +126,68 @@ def _duration_cluster_movie(group: pd.DataFrame) -> pd.Series:
     return pd.Series(cluster)
 
 
-def analyze_duplicates(inventory_path: Path, output_dir: Path, log_callback: Callable[[str], None] | None = None) -> Path:
+def analyze_duplicates(
+    inventory_path: Path,
+    output_dir: Path,
+    log_callback: Callable[[str], None] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> Path:
     log = log_callback or (lambda _msg: None)
+    progress = progress_callback or (lambda _done, _total, _msg: None)
+    done_units = 0
+    total_units = 1
+    progress(done_units, total_units, "Apertura workbook inventario")
     wb = load_inventory_workbook(inventory_path, log_callback=log)
+    done_units += 1
+    progress(done_units, total_units, "Workbook letto")
     log("Workbook caricato")
     for w in wb.warnings:
         log(f"WARNING: {w}")
     df = wb.library.copy()
     log(f"Righe lette: {len(df)}")
+    total_rows = len(df)
+    total_units = 5 + total_rows + 1 + 1 + 3
+    progress(done_units, total_units, "Preparazione analisi duplicati")
+
     log("Normalizzazione titoli e percorsi...")
+    done_units += 1
+    progress(done_units, total_units, "Normalizzazione titoli e percorsi")
     df["normalized_title"] = df["title_or_series"].map(normalize_text)
     df["normalized_basename"] = df["file"].map(normalized_basename)
     log("Calcolo durate...")
+    done_units += 1
+    progress(done_units, total_units, "Calcolo durate")
     df["duration_seconds"] = df["duration_hms"].map(_parse_duration_seconds)
     log("Calcolo ranking video e sorgente...")
+    done_units += 1
+    progress(done_units, total_units, "Calcolo ranking video e sorgente")
     df["resolution_rank"] = df["resolution"].map(resolution_rank)
     df["hdr_rank"] = df["hdr"].map(hdr_rank)
     df["source_tag"] = df.apply(lambda r: source_tag_from_path(str(r.get("file") or ""), str(r.get("container") or "")), axis=1)
     df["source_rank"] = df["source_tag"].map(lambda s: SOURCE_RANK.get(s, SOURCE_RANK["encode"]))
     log("Analisi audio italiano da Debug_Streams/Debug_XML...")
     states = []
-    total_rows = len(df)
     for i, (_, row) in enumerate(df.iterrows(), start=1):
         states.append(detect_italian_audio_state(row, wb.debug_streams, wb.debug_xml))
+        done_units += 1
         if i % 250 == 0 or i == total_rows:
             log(f"Analisi audio italiano: {i}/{total_rows} righe")
+            progress(done_units, total_units, "Analisi audio italiano")
     df["italian_audio_state"] = states
     log("Calcolo punteggi audio...")
+    done_units += 1
+    progress(done_units, total_units, "Calcolo punteggi audio")
     df["audio_it_score"] = df.apply(lambda r: audio_score(parse_audio_quality(r.get("audio_it_quality"), r.get("audio_it_bitrate_mbps"))), axis=1)
     df["audio_en_score"] = df.apply(lambda r: audio_score(parse_audio_quality(r.get("audio_en_quality"), r.get("audio_en_bitrate_mbps"))), axis=1)
     log("Creazione gruppi duplicati...")
+    done_units += 1
+    progress(done_units, total_units, "Creazione gruppi duplicati")
     df["group_key"] = df.apply(build_group_key, axis=1)
     df["cluster_index"] = 0
     log("Split gruppi film per durata...")
     movie_groups = [group for _, group in df.groupby("group_key") if str(group.iloc[0].get("type", "")).lower() == "movie"]
     total_movie_groups = len(movie_groups)
+    total_units += max(total_movie_groups, 1) - 1
     for done, group in enumerate(movie_groups, start=1):
         if str(group.iloc[0].get("type", "")).lower() == "movie":
             c = _duration_cluster_movie(group)
@@ -168,14 +195,22 @@ def analyze_duplicates(inventory_path: Path, output_dir: Path, log_callback: Cal
                 df.loc[row_idx, "cluster_index"] = cluster_idx
         if done % 25 == 0 or done == total_movie_groups:
             log(f"Split durata film: {done}/{total_movie_groups} gruppi")
+            done_units += 25 if done % 25 == 0 else (done % 25)
+            progress(done_units, total_units, "Split gruppi film per durata")
+    if total_movie_groups == 0:
+        done_units += 1
+        progress(done_units, total_units, "Split gruppi film per durata")
     rows = []
     dup_groups = 0
     log("Classificazione gruppi duplicati...")
     clustered = list(df.groupby(["group_key", "cluster_index"]))
     total_clusters = len(clustered)
+    total_units += max(total_clusters, 1) - 1
     for processed, ((_, _), cluster) in enumerate(clustered, start=1):
         if processed % 25 == 0 or processed == total_clusters:
             log(f"Classificazione gruppi: {processed}/{total_clusters}")
+            done_units += 25 if processed % 25 == 0 else (processed % 25)
+            progress(done_units, total_units, "Classificazione gruppi duplicati")
         if len(cluster) < 2:
             continue
         dup_groups += 1
@@ -208,6 +243,9 @@ def analyze_duplicates(inventory_path: Path, output_dir: Path, log_callback: Cal
                     action = "DELETE_PROPOSED"
                     reason = ["vantaggio residuo audio EN sul file da valutare", "resta un vantaggio secondario audio EN"]
             rows.append({**row.to_dict(), "title_or_episode": row.get("episode_title") or row.get("title_or_series"), "file_path": row.get("file"), "keep_reference": keeper.get("file"), "final_action": action, "reason": " ; ".join(reason)})
+    if total_clusters == 0:
+        done_units += 1
+        progress(done_units, total_units, "Classificazione gruppi duplicati")
     log(f"Gruppi duplicati trovati: {dup_groups}")
     out_df = pd.DataFrame(rows)
     if out_df.empty:
@@ -233,6 +271,9 @@ def analyze_duplicates(inventory_path: Path, output_dir: Path, log_callback: Cal
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"report_duplicati_plex_classificato_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     log("Scrittura workbook finale...")
+    done_units += 1
+    progress(done_units, total_units, "Scrittura workbook finale")
     write_duplicate_report(out_path, summary, out_df)
     log(f"Report scritto: {out_path}")
+    progress(total_units, total_units, "Report duplicati completato")
     return out_path

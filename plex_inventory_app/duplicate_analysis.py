@@ -143,7 +143,7 @@ def analyze_duplicates(
     df = wb.library.copy()
     log(f"Righe lette: {len(df)}")
     total_rows = len(df)
-    total_units = 6 + total_rows + 1 + 1 + 2
+    total_units = 7 + 1 + 2
     done_units += 1
     progress(done_units, total_units, "Workbook letto")
     progress(done_units, total_units, "Preparazione analisi duplicati")
@@ -157,33 +157,13 @@ def analyze_duplicates(
     done_units += 1
     progress(done_units, total_units, "Calcolo durate")
     df["duration_seconds"] = df["duration_hms"].map(_parse_duration_seconds)
-    log("Calcolo ranking video e sorgente...")
-    done_units += 1
-    progress(done_units, total_units, "Calcolo ranking video e sorgente")
-    df["resolution_rank"] = df["resolution"].map(resolution_rank)
-    df["hdr_rank"] = df["hdr"].map(hdr_rank)
-    df["source_tag"] = df.apply(lambda r: source_tag_from_path(str(r.get("file") or ""), str(r.get("container") or "")), axis=1)
-    df["source_rank"] = df["source_tag"].map(lambda s: SOURCE_RANK.get(s, SOURCE_RANK["encode"]))
-    log("Analisi audio italiano da Debug_Streams/Debug_XML...")
-    states = []
-    for i, (_, row) in enumerate(df.iterrows(), start=1):
-        states.append(detect_italian_audio_state(row, wb.debug_streams, wb.debug_xml))
-        done_units += 1
-        if i % 250 == 0 or i == total_rows:
-            log(f"Analisi audio italiano: {i}/{total_rows} righe")
-            progress(done_units, total_units, "Analisi audio italiano")
-    df["italian_audio_state"] = states
-    log("Calcolo punteggi audio...")
-    done_units += 1
-    progress(done_units, total_units, "Calcolo punteggi audio")
-    df["audio_it_score"] = df.apply(lambda r: audio_score(parse_audio_quality(r.get("audio_it_quality"), r.get("audio_it_bitrate_mbps"))), axis=1)
-    df["audio_en_score"] = df.apply(lambda r: audio_score(parse_audio_quality(r.get("audio_en_quality"), r.get("audio_en_bitrate_mbps"))), axis=1)
     log("Creazione gruppi duplicati...")
     done_units += 1
+    progress(done_units, total_units, "Creazione gruppi duplicati")
     df["group_key"] = df.apply(build_group_key, axis=1)
     df["cluster_index"] = 0
     movie_groups = [group for _, group in df.groupby("group_key") if str(group.iloc[0].get("type", "")).lower() == "movie"]
-    total_units = 6 + total_rows + max(len(movie_groups), 1) + 1 + 2
+    total_units = 7 + max(len(movie_groups), 1) + 1 + 2
     done_units = min(done_units, total_units)
     progress(done_units, total_units, "Creazione gruppi duplicati")
 
@@ -201,20 +181,59 @@ def analyze_duplicates(
     if total_movie_groups == 0:
         done_units = min(done_units + 1, total_units)
         progress(done_units, total_units, "Split gruppi film per durata")
+    duplicate_clusters = [cluster for _, cluster in df.groupby(["group_key", "cluster_index"]) if len(cluster) >= 2]
+    duplicate_indices: set[int] = set()
+    for cluster in duplicate_clusters:
+        duplicate_indices.update(cluster.index)
+    duplicate_index_list = sorted(duplicate_indices)
+    duplicate_rows_total = len(duplicate_index_list)
+    total_units = 7 + max(len(movie_groups), 1) + duplicate_rows_total + max(len(duplicate_clusters), 1) + 2
+    done_units = min(done_units, total_units)
+    if duplicate_rows_total == 0:
+        log("Nessun gruppo duplicato trovato nel report selezionato.")
+    else:
+        log("Calcolo ranking video e sorgente su righe duplicate...")
+        done_units += 1
+        progress(done_units, total_units, "Calcolo ranking video e sorgente")
+        df.loc[duplicate_index_list, "resolution_rank"] = df.loc[duplicate_index_list, "resolution"].map(resolution_rank)
+        df.loc[duplicate_index_list, "hdr_rank"] = df.loc[duplicate_index_list, "hdr"].map(hdr_rank)
+        df.loc[duplicate_index_list, "source_tag"] = df.loc[duplicate_index_list].apply(
+            lambda r: source_tag_from_path(str(r.get("file") or ""), str(r.get("container") or "")),
+            axis=1,
+        )
+        df.loc[duplicate_index_list, "source_rank"] = df.loc[duplicate_index_list, "source_tag"].map(
+            lambda s: SOURCE_RANK.get(s, SOURCE_RANK["encode"])
+        )
+        log("Analisi audio italiano da Debug_Streams/Debug_XML su righe duplicate...")
+        for i, idx in enumerate(duplicate_index_list, start=1):
+            df.loc[idx, "italian_audio_state"] = detect_italian_audio_state(df.loc[idx], wb.debug_streams, wb.debug_xml)
+            done_units = min(done_units + 1, total_units)
+            if i % 250 == 0 or i == duplicate_rows_total:
+                log(f"Analisi audio italiano: {i}/{duplicate_rows_total} righe duplicate")
+                progress(done_units, total_units, "Analisi audio italiano")
+        log("Calcolo punteggi audio su righe duplicate...")
+        done_units += 1
+        progress(done_units, total_units, "Calcolo punteggi audio")
+        df.loc[duplicate_index_list, "audio_it_score"] = df.loc[duplicate_index_list].apply(
+            lambda r: audio_score(parse_audio_quality(r.get("audio_it_quality"), r.get("audio_it_bitrate_mbps"))),
+            axis=1,
+        )
+        df.loc[duplicate_index_list, "audio_en_score"] = df.loc[duplicate_index_list].apply(
+            lambda r: audio_score(parse_audio_quality(r.get("audio_en_quality"), r.get("audio_en_bitrate_mbps"))),
+            axis=1,
+        )
     rows = []
     dup_groups = 0
     log("Classificazione gruppi duplicati...")
-    clustered = list(df.groupby(["group_key", "cluster_index"]))
-    total_clusters = len(clustered)
-    total_units = 6 + total_rows + max(len(movie_groups), 1) + max(total_clusters, 1) + 2
+    total_clusters = len(duplicate_clusters)
+    total_units = 7 + max(len(movie_groups), 1) + duplicate_rows_total + max(total_clusters, 1) + 2
     done_units = min(done_units, total_units)
-    for processed, ((_, _), cluster) in enumerate(clustered, start=1):
+    for processed, cluster in enumerate(duplicate_clusters, start=1):
+        cluster = df.loc[cluster.index]
         done_units = min(done_units + 1, total_units)
         if processed % 25 == 0 or processed == total_clusters:
             log(f"Classificazione gruppi: {processed}/{total_clusters}")
             progress(done_units, total_units, "Classificazione gruppi duplicati")
-        if len(cluster) < 2:
-            continue
         dup_groups += 1
         has_good_1080 = ((cluster["resolution_rank"] == 3) & (cluster["bitrate_mbps_video"].fillna(0) > 1.5)).any()
         cluster = cluster.copy()
@@ -258,8 +277,6 @@ def analyze_duplicates(
         ])
     if not out_df.empty:
         out_df["group_status"] = out_df.groupby(["group_key", "cluster_index"])["final_action"].transform(lambda s: "MANUALE" if (s=="REVIEW_MANUAL").any() else ("CONSERVA" if (s=="KEEP").sum()>1 else "AUTO_GROUP"))
-    if dup_groups == 0:
-        log("Nessun gruppo duplicato trovato nel report selezionato.")
     keep_count = int((out_df.final_action == "KEEP").sum()) if not out_df.empty else 0
     delete_safe_count = int((out_df.final_action == "DELETE_SAFE").sum()) if not out_df.empty else 0
     delete_proposed_count = int((out_df.final_action == "DELETE_PROPOSED").sum()) if not out_df.empty else 0

@@ -146,7 +146,6 @@ def analyze_duplicates(
     df = wb.library.copy()
     log(f"Righe lette: {len(df)}")
     total_rows = len(df)
-    total_units = 5 + total_rows + 1 + 1 + 3
     progress(done_units, total_units, "Preparazione analisi duplicati")
 
     log("Normalizzazione titoli e percorsi...")
@@ -181,21 +180,23 @@ def analyze_duplicates(
     df["audio_en_score"] = df.apply(lambda r: audio_score(parse_audio_quality(r.get("audio_en_quality"), r.get("audio_en_bitrate_mbps"))), axis=1)
     log("Creazione gruppi duplicati...")
     done_units += 1
-    progress(done_units, total_units, "Creazione gruppi duplicati")
     df["group_key"] = df.apply(build_group_key, axis=1)
     df["cluster_index"] = 0
-    log("Split gruppi film per durata...")
     movie_groups = [group for _, group in df.groupby("group_key") if str(group.iloc[0].get("type", "")).lower() == "movie"]
+    clustered = list(df.groupby(["group_key", "cluster_index"]))
+    total_units = 6 + total_rows + max(len(movie_groups), 1) + max(len(clustered), 1) + 2
+    progress(done_units, total_units, "Creazione gruppi duplicati")
+
+    log("Split gruppi film per durata...")
     total_movie_groups = len(movie_groups)
-    total_units += max(total_movie_groups, 1) - 1
     for done, group in enumerate(movie_groups, start=1):
+        done_units += 1
         if str(group.iloc[0].get("type", "")).lower() == "movie":
             c = _duration_cluster_movie(group)
             for row_idx, cluster_idx in c.items():
                 df.loc[row_idx, "cluster_index"] = cluster_idx
         if done % 25 == 0 or done == total_movie_groups:
             log(f"Split durata film: {done}/{total_movie_groups} gruppi")
-            done_units += 25 if done % 25 == 0 else (done % 25)
             progress(done_units, total_units, "Split gruppi film per durata")
     if total_movie_groups == 0:
         done_units += 1
@@ -205,11 +206,10 @@ def analyze_duplicates(
     log("Classificazione gruppi duplicati...")
     clustered = list(df.groupby(["group_key", "cluster_index"]))
     total_clusters = len(clustered)
-    total_units += max(total_clusters, 1) - 1
     for processed, ((_, _), cluster) in enumerate(clustered, start=1):
+        done_units += 1
         if processed % 25 == 0 or processed == total_clusters:
             log(f"Classificazione gruppi: {processed}/{total_clusters}")
-            done_units += 25 if processed % 25 == 0 else (processed % 25)
             progress(done_units, total_units, "Classificazione gruppi duplicati")
         if len(cluster) < 2:
             continue

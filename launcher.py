@@ -207,8 +207,10 @@ def _fetch_item_xml_bundle_shield_friendly(self, item):
     return None
 
 
-core_mod._connect_resource = _connect_resource_colab_plus
-core_mod._connect_main = _connect_main_colab_plus
+# Disabled: connection monkeypatch caused library loading failures on Windows EXE.
+# Use core.py legacy Plex connection.
+# core_mod._connect_resource = _connect_resource_colab_plus
+# core_mod._connect_main = _connect_main_colab_plus
 core_mod.InventoryRunner.get_plex_for_thread = _get_plex_for_thread_shield_friendly
 core_mod.InventoryRunner.fetch_item_xml_bundle = _fetch_item_xml_bundle_shield_friendly
 apply_debug_wide_patch(core_mod)

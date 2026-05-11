@@ -6,7 +6,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QThread, Qt, Slot
+from PySide6.QtCore import QObject, QThread, Qt, QUrl, Slot
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -536,6 +537,23 @@ class MainWindow(QMainWindow):
             self._dup_log("Inventario completato solo in CSV: l'analisi duplicati richiede un XLSX")
         self._append_log("Completato.")
         QMessageBox.information(self, "Inventario completato", "File creati:\n" + "\n".join(paths) if paths else "Inventario completato.")
+        self._prompt_open_inventory_file(result)
+
+    def _prompt_open_inventory_file(self, result: Any) -> None:
+        report_path = getattr(result, "xlsx_path", None) or getattr(result, "csv_path", None)
+        if not report_path:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Aprire inventario",
+            "Inventario creato. Vuoi aprirlo ora?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path))):
+            QMessageBox.warning(self, "Apri inventario", "Non sono riuscito ad aprire il file automaticamente.")
 
     @Slot(str)
     def _inventory_failed(self, tb: str) -> None:

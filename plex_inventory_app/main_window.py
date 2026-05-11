@@ -292,6 +292,20 @@ class MainWindow(QMainWindow):
         self.dup_progress.setValue(100)
         self.dup_eta_label.setText(f"Completato in {self._fmt_duration(elapsed)}")
         QMessageBox.information(self, "Analisi duplicati completata", f"File generato:\n{out_path}")
+        self._prompt_open_duplicate_report(out_path)
+
+    def _prompt_open_duplicate_report(self, out_path: Any) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Apri report duplicati",
+            "Report duplicati creato. Vuoi aprirlo ora?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_path))):
+            QMessageBox.warning(self, "Apri report duplicati", "Non sono riuscito ad aprire il file automaticamente.")
 
     @Slot(str)
     def _duplicate_failed(self, tb: str) -> None:

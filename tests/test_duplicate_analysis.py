@@ -5,7 +5,15 @@ from plex_inventory_app.duplicate_analysis import (
     load_inventory_workbook, analyze_duplicates, movie_group_key, tv_group_key, build_group_key,
     detect_italian_audio_state,
 )
-from plex_inventory_app.duplicate_policy_v12 import source_tag_from_path, lowbit4k_penalty, parse_audio_quality, audio_better
+from plex_inventory_app.duplicate_policy_v12 import (
+    source_tag_from_path,
+    lowbit4k_penalty,
+    parse_audio_quality,
+    audio_better,
+    resolution_rank,
+    hdr_rank,
+    normalize_text,
+)
 
 
 def make_row(**kwargs):
@@ -66,6 +74,14 @@ def test_audio_guardrails():
     lossy = parse_audio_quality("DD+ 5.1", 1.6)
     assert not audio_better(lossy, lossless, "it")
 
+
+
+def test_policy_handles_nan_values_without_crashing():
+    resolution_rank(float("nan"))
+    hdr_rank(float("nan"))
+    normalize_text(float("nan"))
+    source_tag_from_path(float("nan"), float("nan"))
+    parse_audio_quality(float("nan"), float("nan"))
 
 def test_lowbit4k_penalty_rule():
     assert lowbit4k_penalty(True, 5, 10.0, True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import math
 import re
 from typing import Literal
 
@@ -30,20 +31,28 @@ class AudioScore:
     bitrate: float
 
 
-def normalize_text(value: str | None) -> str:
-    text = (value or "").strip().lower()
+def _safe_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    return str(value)
+
+
+def normalize_text(value: object) -> str:
+    text = _safe_text(value).strip().lower()
     text = re.sub(r"\s+", " ", text)
     return re.sub(r"[^a-z0-9 ]", "", text)
 
 
-def normalized_basename(path: str) -> str:
-    return normalize_text(Path(path or "").name)
+def normalized_basename(path: object) -> str:
+    return normalize_text(Path(_safe_text(path)).name)
 
 
-def source_tag_from_path(file_path: str, container: str | None = None) -> str:
-    low = (file_path or "").lower()
+def source_tag_from_path(file_path: object, container: object = None) -> str:
+    low = _safe_text(file_path).lower()
     base = Path(low).name
-    cont = (container or "").lower()
+    cont = _safe_text(container).lower()
     if any(x in low for x in ["dirtyhippie"]):
         return "dirtyhippie"
     if any(x in low for x in ["aiupscale", "ai_upscale", "upscaled"]):
@@ -61,20 +70,20 @@ def source_tag_from_path(file_path: str, container: str | None = None) -> str:
     return "encode"
 
 
-def resolution_rank(value: str | None) -> int:
-    text = (value or "").lower()
+def resolution_rank(value: object) -> int:
+    text = _safe_text(value).lower()
     for key, rank in RESOLUTION_RANK.items():
         if key in text:
             return rank
     return 0
 
 
-def hdr_rank(value: str | None) -> int:
-    return HDR_RANK.get((value or "").strip().lower(), 0)
+def hdr_rank(value: object) -> int:
+    return HDR_RANK.get(_safe_text(value).strip().lower(), 0)
 
 
-def audio_codec_family(quality: str | None) -> Literal["lossless_or_master", "lossy", "unknown"]:
-    q = str(quality or "").lower()
+def audio_codec_family(quality: object) -> Literal["lossless_or_master", "lossy", "unknown"]:
+    q = _safe_text(quality).lower()
     if any(x in q for x in ["truehd", "dts-hd", "flac", "pcm", "master", "ma"]):
         return "lossless_or_master"
     if any(x in q for x in ["dd", "dd+", "eac3", "ac3", "aac", "dts"]):
@@ -82,13 +91,13 @@ def audio_codec_family(quality: str | None) -> Literal["lossless_or_master", "lo
     return "unknown"
 
 
-def _channels_from_quality(quality: str | None) -> float:
-    q = str(quality or "").lower()
+def _channels_from_quality(quality: object) -> float:
+    q = _safe_text(quality).lower()
     m = re.search(r"(\d(?:\.\d)?)", q)
     return float(m.group(1)) if m else 0.0
 
 
-def broad_channel_tier(quality: str | None) -> Literal["mono", "stereo_or_matrix", "surround", "high_surround", "unknown"]:
+def broad_channel_tier(quality: object) -> Literal["mono", "stereo_or_matrix", "surround", "high_surround", "unknown"]:
     ch = _channels_from_quality(quality)
     if ch == 0:
         return "unknown"
@@ -101,8 +110,16 @@ def broad_channel_tier(quality: str | None) -> Literal["mono", "stereo_or_matrix
     return "high_surround"
 
 
-def parse_audio_quality(value: str | None, bitrate: float | None) -> AudioScore:
-    return AudioScore(audio_codec_family(value), broad_channel_tier(value), _channels_from_quality(value), float(bitrate or 0.0))
+def parse_audio_quality(value: object, bitrate: object) -> AudioScore:
+    bitrate_value = 0.0
+    if bitrate is not None:
+        try:
+            parsed_bitrate = float(bitrate)
+            if not math.isnan(parsed_bitrate):
+                bitrate_value = parsed_bitrate
+        except (TypeError, ValueError):
+            bitrate_value = 0.0
+    return AudioScore(audio_codec_family(value), broad_channel_tier(value), _channels_from_quality(value), bitrate_value)
 
 
 def _tier_num(t: str) -> int:
@@ -138,5 +155,5 @@ def lowbit4k_penalty(is_movie: bool, row_resolution_rank: int, video_bitrate: fl
     return is_movie and row_resolution_rank >= 5 and video_bitrate < 12.0 and has_good_1080p
 
 
-def basename(path: str) -> str:
-    return Path(path or "").name
+def basename(path: object) -> str:
+    return Path(_safe_text(path)).name

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -14,6 +14,8 @@ import re
 import threading
 import time
 from typing import Callable, Iterable, Optional
+
+import requests
 
 import pandas as pd
 
@@ -107,27 +109,122 @@ def list_plex_servers(token: str) -> list[str]:
     return sorted(set(names), key=str.lower)
 
 
-def list_libraries(token: str, server_name: str) -> list[dict[str, str]]:
-    plex = _connect_main(token, server_name)
+def list_libraries(
+    token: str,
+    server_name: str,
+    log_callback: LogCallback | None = None,
+) -> list[dict[str, str]]:
+    log = log_callback or (lambda _msg: None)
+    log("Connessione al server Plex per lettura librerie...")
+    log(f"Server richiesto: {server_name}")
+    plex = _connect_main(token, server_name, log_callback=log_callback)
+    log("Connessione riuscita, leggo sezioni libreria...")
+    sections = _call_with_timeout(lambda: plex.library.sections(), timeout_s=15)
+    log(f"Sezioni trovate: {len(sections)}")
+
     out: list[dict[str, str]] = []
-    for sec in plex.library.sections():
+    for sec in sections:
         sec_type = str(getattr(sec, "type", "") or "")
         if sec_type in ("movie", "show"):
             out.append({"title": sec.title, "type": sec_type})
+    log(f"Librerie Movies/TV trovate: {len(out)}")
     return out
 
 
-def _connect_main(token: str, server_name: str) -> PlexServer:
-    account = MyPlexAccount(token=token.strip())
-    resource = account.resource(server_name.strip())
-    return resource.connect(timeout=6)
+def _call_with_timeout(fn: Callable[[], object], timeout_s: int):
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(fn)
+        return fut.result(timeout=timeout_s)
 
 
-def _connect_resource(token: str, server_name: str):
+def _decoded_plex_direct_candidates(uri: str) -> list[str]:
+    m = re.search(r"(?P<enc>(?:\d{1,3}-){3}\d{1,3})\.[^.]+\.plex\.direct", uri)
+    if not m:
+        return []
+    ip = m.group("enc").replace("-", ".")
+    return [f"http://{ip}:32400", f"https://{ip}:32400"]
+
+
+def _connect_to_resource(token: str, server_name: str, log_callback: LogCallback | None = None):
+    log = log_callback or (lambda _msg: None)
     account = MyPlexAccount(token=token.strip())
     resource = account.resource(server_name.strip())
-    plex = resource.connect(timeout=6)
-    return resource, plex
+
+    attempts: list[tuple[str, str]] = []
+
+    log("Tentativo connessione legacy via resource.connect(timeout=12)")
+    try:
+        plex = resource.connect(timeout=12)
+        _call_with_timeout(lambda: plex.library.sections(), timeout_s=15)
+        log("Connessione legacy riuscita")
+        return resource, plex
+    except FuturesTimeoutError:
+        attempts.append(("resource.connect(timeout=12)", "TimeoutError"))
+        log("Connessione legacy fallita: TimeoutError")
+    except Exception as exc:
+        attempts.append(("resource.connect(timeout=12)", type(exc).__name__))
+        log(f"Connessione legacy fallita: {type(exc).__name__}")
+
+    connections = list(getattr(resource, "connections", []) or [])
+
+    def _sort_key(conn) -> tuple[int, int, int]:
+        uri = str(getattr(conn, "uri", "") or "")
+        is_https = uri.lower().startswith("https://")
+        return (
+            0 if bool(getattr(conn, "local", False)) else 1,
+            0 if not bool(getattr(conn, "relay", False)) else 1,
+            0 if not is_https else 1,
+        )
+
+    candidate_urls: list[str] = []
+    for conn in sorted(connections, key=_sort_key):
+        uri = str(getattr(conn, "uri", "") or "").strip()
+        if not uri:
+            continue
+        candidate_urls.append(uri)
+        candidate_urls.extend(_decoded_plex_direct_candidates(uri))
+
+    seen: set[str] = set()
+    deduped_candidates: list[str] = []
+    for url in candidate_urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        deduped_candidates.append(url)
+
+    for base_url in deduped_candidates:
+        log(f"Tentativo connessione URI: {base_url}")
+        try:
+            kwargs = {"timeout": 12}
+            if base_url.lower().startswith("https://") and ".plex.direct" not in base_url.lower():
+                session = requests.Session()
+                session.verify = False
+                kwargs["session"] = session
+
+            plex = PlexServer(base_url, token.strip(), **kwargs)
+            _call_with_timeout(lambda: plex.library.sections(), timeout_s=15)
+            log(f"Connessione riuscita su URI: {base_url}")
+            return resource, plex
+        except FuturesTimeoutError:
+            attempts.append((base_url, "TimeoutError"))
+            log(f"Tentativo fallito su URI {base_url}: TimeoutError")
+        except Exception as exc:
+            attempts.append((base_url, type(exc).__name__))
+            log(f"Tentativo fallito su URI {base_url}: {type(exc).__name__}")
+
+    details = "\n".join(f"- {uri}: {err_type}" for uri, err_type in attempts)
+    raise RuntimeError(
+        f"Impossibile connettersi al server Plex '{server_name}'. Tentativi effettuati:\n{details}"
+    )
+
+
+def _connect_main(token: str, server_name: str, log_callback: LogCallback | None = None) -> PlexServer:
+    _resource, plex = _connect_to_resource(token, server_name, log_callback=log_callback)
+    return plex
+
+
+def _connect_resource(token: str, server_name: str, log_callback: LogCallback | None = None):
+    return _connect_to_resource(token, server_name, log_callback=log_callback)
 
 
 def with_timestamp(path_str: str, fmt: str = TIMESTAMP_FMT, tz=TZ_MILAN) -> str:

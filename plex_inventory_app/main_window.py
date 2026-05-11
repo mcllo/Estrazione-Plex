@@ -407,7 +407,7 @@ class MainWindow(QMainWindow):
             return
         self._append_log(f"Carico librerie da {server}...")
         self._run_background(
-            lambda: list_libraries(token, server),
+            lambda: list_libraries(token, server, log_callback=self._append_log),
             self._libraries_loaded,
             "Caricamento librerie fallito",
             on_error=self._libraries_failed,

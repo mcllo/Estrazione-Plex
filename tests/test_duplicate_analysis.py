@@ -63,7 +63,7 @@ def test_source_tags():
 
 
 def test_italian_state_yes_unknown():
-    row = pd.Series(make_row(audio_it_quality="", file="/movie.m2ts", container="m2ts"))
+    row = pd.Series(make_row(audio_it_quality="", audio_it_bitrate_mbps=0, file="/movie.m2ts", container="m2ts"))
     ds = pd.DataFrame([{"rating_key":"1", "lang":"ita"}])
     assert detect_italian_audio_state(row, ds, None) == "yes"
     assert detect_italian_audio_state(row, None, None) == "unknown"
@@ -120,6 +120,25 @@ def test_dd_plus_can_beat_dd_when_guardrail_cleared_and_score_delta_high():
 
 def test_dtsx_is_classified_as_lossless_or_master():
     assert audio_codec_family("DTS:X 7.1") == "lossless_or_master"
+    assert parse_audio_quality("DTS:X 7.1", 2.0).codec_score == 9.3
+
+
+def test_audio_codec_score_matches_policy_values():
+    assert parse_audio_quality("TrueHD Atmos 7.1", 4.0).codec_score == 9.5
+    assert parse_audio_quality("DD+ Atmos 5.1", 0.768).codec_score == 6.7
+    assert parse_audio_quality("DD 5.1", 0.640).codec_score == 5.7
+
+
+def test_audio_bitrate_term_uses_mbps_to_kbps_and_caps():
+    low = parse_audio_quality("DD 5.1", 0.1)
+    high = parse_audio_quality("DD 5.1", 4.0)
+    extreme = parse_audio_quality("DD 5.1", 100.0)
+    assert high.total_score > low.total_score
+    assert extreme.total_score - extreme.codec_score - 0.5 <= 2.5
+
+
+def test_ma_substring_does_not_create_false_lossless():
+    assert parse_audio_quality("German AAC 2.0", 0.2).codec_family != "lossless_or_master"
 
 
 def test_candidate_sort_key_prefers_video_then_it_audio_then_source_then_en():
@@ -179,6 +198,26 @@ def test_candidate_score_handles_nan_values():
     s = candidate_score(row)
     assert isinstance(s.video_bitrate, float)
     assert isinstance(s.audio_it_score, tuple)
+    assert s.lowbit4k_penalized is False
+
+
+def test_tv_group_key_normalizes_season_episode():
+    r1 = pd.Series(make_row(type="episode", season=1, episode=2, year=2020))
+    r2 = pd.Series(make_row(type="episode", season="01", episode="02", year=2020))
+    r3 = pd.Series(make_row(type="episode", season="01", episode="02", year=2021))
+    assert tv_group_key(r1) == tv_group_key(r2)
+    assert tv_group_key(r1) != tv_group_key(r3)
+
+
+def test_detect_italian_audio_state_streams_and_fallbacks():
+    row = pd.Series(make_row(rating_key="1", file="/full_disc.m2ts", container="m2ts", audio_it_quality="", audio_it_bitrate_mbps=0))
+    ds_yes = pd.DataFrame([{"rating_key": "1", "streamType": 2, "language": "ita"}])
+    ds_no = pd.DataFrame([{"rating_key": "1", "streamType": 2, "language": "eng"}, {"rating_key": "1", "streamType": 2, "language": "fre"}])
+    assert detect_italian_audio_state(row, ds_yes, None) == "yes"
+    assert detect_italian_audio_state(row, ds_no, None) == "no"
+    assert detect_italian_audio_state(row, None, None) == "unknown"
+    row_lib = pd.Series(make_row(rating_key="2", audio_it_bitrate_mbps=0.2, audio_it_quality=""))
+    assert detect_italian_audio_state(row_lib, None, None) == "yes"
 
 
 def test_candidate_sort_key_handles_missing_audio_score():

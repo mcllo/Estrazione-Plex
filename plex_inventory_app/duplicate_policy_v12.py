@@ -112,9 +112,27 @@ def _safe_score_tuple(value: object) -> tuple[float, float, float, float]:
     return tuple(_safe_float(v, 0.0) for v in vals[:4])
 
 
+def _safe_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and math.isnan(value):
+            return default
+        return value != 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1", "yes", "y", "si", "sì"}:
+            return True
+        if text in {"false", "0", "no", "n"}:
+            return False
+    return default
+
+
 def audio_codec_family(quality: object) -> Literal["lossless_or_master", "lossy", "unknown"]:
     q = _safe_text(quality).lower()
-    if any(x in q for x in ["truehd", "dts-hd", "flac", "pcm", "master", "ma", "dts:x", "dts-x", "dts x"]):
+    if any(x in q for x in ["truehd", "dts-hd", "flac", "pcm", "master", "dts:x", "dts-x", "dts x"]) or re.search(r"dts\s*ma", q):
         return "lossless_or_master"
     if any(x in q for x in ["dd", "dd+", "eac3", "ac3", "aac", "dts"]):
         return "lossy"
@@ -125,14 +143,18 @@ def _audio_codec_key(quality: object) -> str:
     q = _safe_text(quality).lower()
     if "truehd" in q and "atmos" in q:
         return "truehd_atmos"
-    if "dts:x" in q or "dts-x" in q:
-        return "dtsx"
+    if "dts:x" in q or "dts-x" in q or "dts x" in q:
+        return "dts_x"
     if "truehd" in q:
         return "truehd"
-    if "dts-hd" in q or "dts hd" in q or " ma" in f" {q} ":
-        return "dtshd_ma"
+    if "dts-hd" in q or "dts hd" in q or re.search(r"dts\s*ma", q):
+        return "dts_hd"
     if "flac" in q or "lpcm" in q or " pcm" in f" {q} ":
         return "flac_lpcm_pcm"
+    if "atmos" in q and ("eac3" in q or "dd+" in q or "dolby digital plus" in q):
+        return "ddp_atmos"
+    if "atmos" in q and ("ac3" in q or re.search(r"\bdd\b", q) or "dolby digital" in q):
+        return "dd_atmos"
     if "eac3" in q or "dd+" in q or "dolby digital plus" in q:
         return "ddp"
     if re.search(r"\bdts\b", q):
@@ -148,7 +170,23 @@ def _audio_codec_key(quality: object) -> str:
     return "unknown"
 
 
-CODEC_SCORE = {"truehd_atmos": 11.0, "dtsx": 10.8, "truehd": 10.5, "dtshd_ma": 10.0, "flac_lpcm_pcm": 9.5, "ddp": 7.5, "dts": 7.0, "dd": 6.8, "opus": 6.0, "aac": 5.8, "mp3": 5.0, "unknown": 0.0}
+CODEC_SCORE = {"truehd_atmos": 9.5, "dts_x": 9.3, "truehd": 9.0, "dts_hd": 8.8, "flac_lpcm_pcm": 8.7, "ddp_atmos": 6.7, "ddp": 6.2, "dts": 6.0, "dd_atmos": 6.1, "dd": 5.7, "opus": 4.9, "aac": 4.8, "mp3": 4.0, "unknown": 3.8}
+
+
+def _channel_bonus(channels: float) -> float:
+    if channels >= 7.1:
+        return 0.8
+    if channels >= 6.1:
+        return 0.65
+    if channels >= 5.1:
+        return 0.5
+    if channels >= 4.0:
+        return 0.25
+    if channels >= 3.0:
+        return 0.15
+    if channels >= 2.0:
+        return 0.1
+    return 0.0
 
 
 def _channels_from_quality(quality: object) -> float:
@@ -182,7 +220,9 @@ def parse_audio_quality(value: object, bitrate: object) -> AudioScore:
     codec_key = _audio_codec_key(value)
     channels = _channels_from_quality(value)
     codec_score = CODEC_SCORE.get(codec_key, 0.0)
-    total_score = codec_score + channels * 0.2 + math.log1p(max(bitrate_value, 0.0))
+    bitrate_kbps = max(bitrate_value, 0.0) * 1000.0
+    bitrate_term = min(2.5, math.log1p(bitrate_kbps) / 4.0)
+    total_score = codec_score + _channel_bonus(channels) + bitrate_term
     return AudioScore(codec_key, audio_codec_family(value), broad_channel_tier(value), channels, bitrate_value, codec_score, total_score)
 
 
@@ -236,7 +276,7 @@ def candidate_score(row: object) -> DuplicateCandidateScore:
     get = row.get if hasattr(row, "get") else lambda k, d=None: d
     source_tag = str(get("source_tag") or "")
     return DuplicateCandidateScore(
-        bool(get("lowbit4k_penalized", False)),
+        _safe_bool(get("lowbit4k_penalized", False), False),
         _safe_float(get("bitrate_mbps_video"), 0.0),
         _safe_int(get("resolution_rank"), 0),
         _safe_int(get("hdr_rank"), 0),

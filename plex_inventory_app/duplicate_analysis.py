@@ -70,10 +70,19 @@ def movie_group_key(row: pd.Series) -> str:
     return f"movie:titleyear:{normalize_text(row.get('title_or_series'))}:{str(row.get('year') or '').strip()}"
 
 
+def _episode_component(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.isdigit():
+        return f"{int(text):02d}"
+    return text
+
+
 def tv_group_key(row: pd.Series) -> str:
     title = normalize_text(row.get("title_or_series"))
-    season = str(row.get("season") or "")
-    episode = str(row.get("episode") or "")
+    season = _episode_component(row.get("season"))
+    episode = _episode_component(row.get("episode"))
     year = str(row.get("year") or "").strip()
     return f"tv:{title}:{year}:s{season}:e{episode}" if year else f"tv:{title}:s{season}:e{episode}"
 
@@ -85,7 +94,12 @@ def build_group_key(row: pd.Series) -> str:
 def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.DataFrame | None) -> str:
     rk = str(row.get("rating_key") or "")
     file_path = str(row.get("file") or "")
-    def _scan(df: pd.DataFrame | None) -> str | None:
+    pos = {"italian", "italiano", "ita", "it"}
+    neg = {"latino", "latin", "castilian", "spanish", "espanol", "spa"}
+    def _row_tokens(s: pd.Series, cols: list[str]) -> set[str]:
+        text = " ".join(str(s.get(c, "")) for c in cols).lower()
+        return set(re.findall(r"[a-z]+", text))
+    def _scan_streams(df: pd.DataFrame | None) -> str | None:
         if df is None:
             return None
         cols = {c.lower(): c for c in df.columns}
@@ -94,20 +108,42 @@ def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.D
             matches = df[df[cols["rating_key"]].astype(str) == rk]
         if matches.empty:
             return None
-        text = " ".join(matches.astype(str).fillna("").agg(" ".join, axis=1).tolist()).lower()
-        tokens = set(re.findall(r"[a-z]+", text))
-        positive_tokens = {"italian", "italiano", "ita", "it"}
-        negative_tokens = {"latino", "latin", "american", "spanish", "espanol", "spa", "castilian"}
-        if tokens & positive_tokens and not (tokens & negative_tokens):
-            return "yes"
-        if any(x in text for x in ["audio", "language", "lang"]):
+        type_col = next((cols[k] for k in ["streamtype", "st_streamtype", "stream_type"] if k in cols), None)
+        if type_col:
+            matches = matches[matches[type_col].astype(str).str.lower().isin(["2", "audio"])]
+        if matches.empty:
+            return "unknown"
+        scan_cols = [c for c in matches.columns if c.lower() in {"lang", "language", "languagetag", "languagecode", "title", "displaytitle", "extendeddisplaytitle", "st_language", "st_languagetag", "st_languagecode", "st_title", "st_displaytitle", "st_extendeddisplaytitle"}]
+        has_non_it = False
+        for _, s in matches.iterrows():
+            tokens = _row_tokens(s, scan_cols)
+            if tokens & pos and not (tokens & neg):
+                return "yes"
+            if tokens and not (tokens & pos):
+                has_non_it = True
+        return "no" if has_non_it else "unknown"
+    def _scan_xml(df: pd.DataFrame | None) -> str | None:
+        if df is None:
+            return None
+        cols = {c.lower(): c for c in df.columns}
+        matches = df
+        if "rating_key" in cols:
+            matches = df[df[cols["rating_key"]].astype(str) == rk]
+        if matches.empty:
+            return None
+        scan_cols = [c for c in matches.columns if c.lower() in {"dbg_audio_it_language", "dbg_audio_it_languagecode", "dbg_audio_it_title", "dbg_audio_it_displaytitle", "dbg_audio_it_extendeddisplaytitle", "dbg_audio_streams"}]
+        for _, s in matches.iterrows():
+            tokens = _row_tokens(s, scan_cols)
+            if tokens & pos and not (tokens & neg):
+                return "yes"
+        text = " ".join(matches[scan_cols].astype(str).fillna("").agg(" ".join, axis=1).tolist()).lower() if scan_cols else ""
+        if any(x in text for x in ["english", "eng", "french", "fre", "spa", "spanish"]):
             return "no"
-        return None
-    for src in (_scan(ds), _scan(dx)):
-        if src:
+        return "unknown"
+    for src in (_scan_streams(ds), _scan_xml(dx)):
+        if src is not None:
             return src
-    q = str(row.get("audio_it_quality") or "").strip().lower()
-    if q:
+    if float(row.get("audio_it_bitrate_mbps") or 0) > 0 or str(row.get("audio_it_quality") or "").strip():
         return "yes"
     if source_tag_from_path(file_path, str(row.get("container") or "")) == "full_disc":
         return "unknown"
@@ -166,6 +202,8 @@ def _best_technical_keeper(cluster: pd.DataFrame) -> int | None:
 
 
 def _choose_keep_indices(cluster: pd.DataFrame, keeper: pd.Series) -> set[int]:
+    # App extension: when full_disc, DirtyHippie/AI-upscale and best technical coexist,
+    # keep all three as CONSERVA. This is general and not title-specific.
     keep_indices: set[int] = {keeper.name}
     special_keepers = _allowed_special_keepers(cluster)
     best_technical = _best_technical_keeper(cluster)

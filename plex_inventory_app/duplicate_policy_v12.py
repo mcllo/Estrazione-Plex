@@ -55,9 +55,9 @@ def source_tag_from_path(file_path: object, container: object = None) -> str:
         return "full_disc"
     if "remux" in low:
         return "remux"
-    if any(x in low for x in ["web-dl", "webdl", "webrip", "web rip", "hmax", "amzn", "nf", "dsnp", "uhdrip"]):
+    if any(x in low for x in ["web-dl", "webdl", "webrip", "web rip", "hmax", "amzn", "dsnp"]) or re.search(r"(?:^|[.\-\s\[])(nf)(?:$|[.\-\s\]])", low):
         return "web"
-    if any(x in low for x in ["bluray", "blu-ray", "bdrip"]):
+    if any(x in low for x in ["bluray", "blu-ray", "bdrip", "uhdrip"]):
         return "bluray"
     if "repack" in low:
         return "repack"
@@ -73,7 +73,43 @@ def resolution_rank(value: object) -> int:
 
 
 def hdr_rank(value: object) -> int:
-    return HDR_RANK.get(_safe_text(value).strip().lower(), 0)
+    text = _safe_text(value).strip().lower()
+    if text in {"dv", "dolby vision"}:
+        return 4
+    if text in {"hdr10+", "hdr10 plus", "hdr10plus"}:
+        return 3
+    if text == "hdr10":
+        return 2
+    if text == "hlg":
+        return 1
+    return HDR_RANK.get(text, 0)
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        parsed = float(value)
+        return default if math.isnan(parsed) else parsed
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        parsed = int(float(value))
+        return default if isinstance(value, float) and math.isnan(value) else parsed
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_score_tuple(value: object) -> tuple[float, float, float, float]:
+    if not isinstance(value, tuple):
+        return (0.0, 0.0, 0.0, 0.0)
+    vals = list(value[:4]) + [0.0] * (4 - len(value[:4]))
+    return tuple(_safe_float(v, 0.0) for v in vals[:4])
 
 
 def audio_codec_family(quality: object) -> Literal["lossless_or_master", "lossy", "unknown"]:
@@ -172,7 +208,8 @@ def audio_better(candidate: AudioScore, reference: AudioScore, language: str = "
         return _tier_num(candidate.broad_tier) - _tier_num(reference.broad_tier) > 1
     if _tier_num(candidate.broad_tier) != _tier_num(reference.broad_tier):
         return _tier_num(candidate.broad_tier) > _tier_num(reference.broad_tier)
-    return candidate.bitrate > reference.bitrate
+    threshold = 0.35 if language == "it" else 0.25
+    return (candidate.total_score - reference.total_score) > threshold
 
 
 def audio_score(a: AudioScore) -> tuple[int, int, float, float]:
@@ -204,13 +241,13 @@ def candidate_score(row: object) -> DuplicateCandidateScore:
     source_tag = str(get("source_tag") or "")
     return DuplicateCandidateScore(
         bool(get("lowbit4k_penalized", False)),
-        float(get("bitrate_mbps_video") or 0.0),
-        int(get("resolution_rank") or 0),
-        int(get("hdr_rank") or 0),
-        get("audio_it_score"),
-        float(get("source_rank") or 0.0),
-        get("audio_en_score"),
-        float(get("size_gib") or 0.0),
+        _safe_float(get("bitrate_mbps_video"), 0.0),
+        _safe_int(get("resolution_rank"), 0),
+        _safe_int(get("hdr_rank"), 0),
+        _safe_score_tuple(get("audio_it_score")),
+        _safe_float(get("source_rank"), 0.0),
+        _safe_score_tuple(get("audio_en_score")),
+        _safe_float(get("size_gib"), 0.0),
         str(get("normalized_basename") or ""),
         source_tag,
         source_tag in {"full_disc", "dirtyhippie", "ai_upscale"},
@@ -223,9 +260,9 @@ def candidate_sort_key(score: DuplicateCandidateScore) -> tuple:
         -score.video_bitrate,
         -score.resolution_rank,
         -score.hdr_rank,
-        tuple(-x for x in score.audio_it_score),
+        tuple(-x for x in _safe_score_tuple(score.audio_it_score)),
         -score.source_rank,
-        tuple(-x for x in score.audio_en_score),
+        tuple(-x for x in _safe_score_tuple(score.audio_en_score)),
         -score.size_gib,
         score.normalized_basename,
     )

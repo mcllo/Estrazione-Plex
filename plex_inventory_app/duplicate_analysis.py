@@ -132,6 +132,22 @@ def choose_primary_keeper(cluster: pd.DataFrame) -> pd.Series:
     return cluster.loc[scored[0][0]]
 
 
+def _allowed_special_keepers(cluster: pd.DataFrame) -> set[int]:
+    eligible = cluster[cluster["source_tag"].isin(["full_disc", "dirtyhippie", "ai_upscale"]) & (~cluster["lowbit4k_penalized"])]
+    if eligible.empty:
+        return set()
+    ranked = sorted([(idx, candidate_score(row)) for idx, row in eligible.iterrows()], key=lambda x: candidate_sort_key(x[1]))
+    best_idx = ranked[0][0]
+    keep = {best_idx}
+    tags = set(eligible["source_tag"].tolist())
+    if "full_disc" in tags and ({"dirtyhippie", "ai_upscale"} & tags):
+        for idx, _ in ranked:
+            if idx != best_idx and str(cluster.loc[idx, "source_tag"]) in {"full_disc", "dirtyhippie", "ai_upscale"}:
+                keep.add(idx)
+                break
+    return keep
+
+
 def analyze_duplicates(
     inventory_path: Path,
     output_dir: Path,
@@ -245,8 +261,7 @@ def analyze_duplicates(
         cluster = cluster.copy()
         cluster["lowbit4k_penalized"] = cluster.apply(lambda r: lowbit4k_penalty(str(r.get("type", "")).lower()=="movie", int(r["resolution_rank"]), float(r.get("bitrate_mbps_video") or 0), bool(has_good_1080)), axis=1)
         keeper = choose_primary_keeper(cluster)
-        special_mask = cluster["source_tag"].isin(["full_disc","dirtyhippie","ai_upscale"])
-        special_keepers = set(cluster[special_mask & (~cluster["lowbit4k_penalized"])].index.tolist())
+        special_keepers = _allowed_special_keepers(cluster)
         for _, row in cluster.iterrows():
             action = "KEEP" if row.name == keeper.name or row.name in special_keepers else "DELETE_SAFE"
             reason = ["versione tenuta con le regole attuali"] if action == "KEEP" else ["differenze contenute: copia ridondante"]

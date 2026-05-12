@@ -101,6 +101,8 @@ def test_source_tags_match_policy_v12_patterns():
     assert source_tag_from_path("/x/ai-enhanced.mkv") == "ai_upscale"
     assert source_tag_from_path("/x/ai.upscaled.mkv") == "ai_upscale"
     assert source_tag_from_path("/x/NF.WEB-DL.mkv") == "web"
+    assert source_tag_from_path("/x/UHDRip.release.mkv") == "bluray"
+    assert source_tag_from_path("/x/info.release.mkv") != "web"
 
 
 def test_dd_plus_does_not_beat_much_higher_bitrate_dd_same_channels():
@@ -158,6 +160,46 @@ def test_delete_proposed_only_for_residual_en_audio_advantage(tmp_path: Path):
     out = analyze_duplicates(p, tmp_path)
     all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
     assert "DELETE_PROPOSED" in set(all_df["final_action"])
+
+
+def test_candidate_score_handles_nan_values():
+    row = pd.Series(make_row())
+    row["audio_it_score"] = float("nan")
+    row["audio_en_score"] = None
+    row["bitrate_mbps_video"] = float("nan")
+    s = candidate_score(row)
+    assert isinstance(s.video_bitrate, float)
+    assert isinstance(s.audio_it_score, tuple)
+
+
+def test_candidate_sort_key_handles_missing_audio_score():
+    row = pd.Series(make_row())
+    row["audio_it_score"] = None
+    row["audio_en_score"] = "bad"
+    row["resolution_rank"] = resolution_rank(row["resolution"])
+    row["hdr_rank"] = hdr_rank(row["hdr"])
+    row["source_rank"] = 5.0
+    row["normalized_basename"] = "x"
+    row["lowbit4k_penalized"] = False
+    key = candidate_sort_key(candidate_score(row))
+    assert isinstance(key, tuple)
+
+
+def test_hdr_rank_recognizes_hlg_and_hdr10_plus():
+    assert hdr_rank("hlg") == 1
+    assert hdr_rank("hdr10 plus") == 3
+
+
+def test_special_keep_not_more_than_two_in_ordinary_case(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/best.mkv", rating_key="1", bitrate_mbps_video=9.0),
+        make_row(file="/dirtyhippie.one.mkv", rating_key="2", bitrate_mbps_video=4.0),
+        make_row(file="/ai-upscaled.two.mkv", rating_key="3", bitrate_mbps_video=4.1),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    assert (all_df["final_action"] == "KEEP").sum() <= 2
 
 
 def test_actions_and_sheets(tmp_path: Path):

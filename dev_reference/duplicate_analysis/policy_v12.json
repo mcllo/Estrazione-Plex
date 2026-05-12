@@ -1,4 +1,1053 @@
 {
-  "policy_version": "v12_normative_general_policy_tv_year_fix_audio_engineering",
-  "notes": "Reference only; not loaded at runtime"
+  "spec_name": "plex_duplicate_classification_rules_v12_normative_general_policy_tv_year_fix_audio_engineering",
+  "spec_version": "v12_normative_general_policy_tv_year_fix_audio_engineering",
+  "goal": "Normative, title-agnostic policy for classifying Plex duplicate media groups. The JSON is the authoritative specification to be interpreted directly by an AI or a code generator. Its purpose is to reproduce the decision style of the supplied reference report as closely as possible using only general rules, without title-specific cheats or hidden logic outside this document.",
+  "deterministic_goal": [
+    "Treat this JSON as the authoritative policy for generating code and for runtime decisions.",
+    "Do not introduce title-specific exceptions, hard-coded title aliases, or group-id-specific outcomes unless they are explicitly present here for non-cheating structural reasons; in this version they are forbidden.",
+    "Prefer deterministic, reproducible outcomes over ad-hoc heuristics.",
+    "Use video quality as the primary decision axis, then Italian audio, then source/original-value, then residual English-audio differences.",
+    "Match the dominant decision tendencies of the supplied reference report using only general rules.",
+    "Use file as the action target identifier; never target actions using rating_key alone.",
+    "Escalate to REVIEW_MANUAL only for real unresolved trade-offs, not merely because the implementation is conservative.",
+    "For TV grouping, use year as a series-level disambiguator when present so that same-title series with different years never collapse into the same duplicate group."
+  ],
+  "accepted_inputs": {
+    "inventory_workbook": {
+      "required_sheet": "Library",
+      "optional_sheets": [
+        "Debug_XML",
+        "Debug_Streams"
+      ],
+      "required_fields": [
+        "type",
+        "title_or_series",
+        "season",
+        "episode",
+        "episode_title",
+        "year",
+        "resolution",
+        "hdr",
+        "videoCodec",
+        "container",
+        "duration_hms",
+        "bitrate_mbps_video",
+        "audio_it_bitrate_mbps",
+        "audio_it_quality",
+        "audio_en_bitrate_mbps",
+        "audio_en_quality",
+        "size_gib",
+        "imdb_id",
+        "rating_key",
+        "file"
+      ],
+      "optional_fields": [
+        "tmdb_id",
+        "bitrate_mbps_total",
+        "genres",
+        "added_at_milan"
+      ],
+      "field_semantics": {
+        "rating_key": "Content-level identifier for the Plex logical item (movie or TV episode). Not a unique file identifier.",
+        "file": "Unique physical-file identifier. Treat it as the full path including filename and use it for output actions.",
+        "year": "For movies, used in the title+year fallback group key. For TV, when present it is treated as the series year and must disambiguate same-title reboots/remakes or unrelated same-title series before duplicate grouping."
+      }
+    },
+    "reference_report_workbook": {
+      "optional": true,
+      "purpose": [
+        "Offline calibration of the general policy.",
+        "Validation that generated code produces outcomes close to the supplied target report.",
+        "Extraction of wording style for reasons."
+      ],
+      "must_not_be_used_as": [
+        "A shortcut source of final actions in production.",
+        "A replacement for duplicate classification logic.",
+        "A source for title-specific memorization."
+      ],
+      "required_sheets_if_present": [
+        "Sintesi",
+        "CONSERVA",
+        "ELIMINA_SICURO",
+        "ELIMINA_PROPOSTI",
+        "MANUALE_INDEX"
+      ]
+    }
+  },
+  "authoritative_source_order": {
+    "for_grouping_and_decisions": [
+      "Inventory workbook rows are the primary runtime input.",
+      "Use Debug_Streams as the strongest language source.",
+      "Then use Debug_XML.",
+      "Then use Library fallback values."
+    ],
+    "for_reference_alignment": [
+      "If a reference report workbook is supplied, use it only to infer and validate general tendencies.",
+      "Do not copy final row outcomes from the report into production logic.",
+      "Do not learn or emit title-specific exceptions from the report."
+    ]
+  },
+  "normalization": {
+    "normalize_text": {
+      "lowercase": true,
+      "trim": true,
+      "collapse_multiple_spaces": true,
+      "replace_en_dash_em_dash_with_hyphen": true,
+      "strip_outer_quotes": true
+    },
+    "normalize_basename": {
+      "use_only_filename_after_last_slash": true,
+      "lowercase": true,
+      "trim": true
+    },
+    "parse_duration_hms_to_seconds": true,
+    "missing_value_tokens": [
+      "",
+      null,
+      "—",
+      "-",
+      "n/a",
+      "null"
+    ]
+  },
+  "grouping": {
+    "movie_group_key": {
+      "priority": [
+        "imdb_id if present",
+        "tmdb_id if imdb_id missing and tmdb_id present",
+        "movie|{normalized_title}|{year}"
+      ]
+    },
+    "tv_group_key": {
+      "priority": [
+        "tv|{normalized_title}|{year}|S{season_2_digits}E{episode_2_digits} if year is present",
+        "tv|{normalized_title}|S{season_2_digits}E{episode_2_digits} if year is missing"
+      ],
+      "conflict_guard": [
+        "If two TV rows have the same normalized title, season, and episode but different populated year values, they must never be placed in the same duplicate group.",
+        "Use the year-less fallback only for rows whose year is missing or unusable.",
+        "Do not merge different TV reboots, remakes, or unrelated same-title series merely because season and episode numbering overlap."
+      ]
+    }
+  },
+  "ranking_functions": {
+    "resolution_rank": {
+      "2160": 2160,
+      "1080": 1080,
+      "720": 720,
+      "576": 576,
+      "480": 480,
+      "sd": 360,
+      "default": 0
+    },
+    "hdr_rank": {
+      "dolby_vision_or_dv": 4,
+      "hdr10_plus": 3,
+      "hdr10": 2,
+      "hlg": 1,
+      "sdr_or_missing": 0
+    },
+    "source_tag_detection": [
+      {
+        "if_file_contains": [
+          "dirtyhippie"
+        ],
+        "tag": "dirtyhippie"
+      },
+      {
+        "if_file_contains": [
+          "ai-enhanced",
+          "ai-upscaled",
+          "ai.upscaled",
+          "upscaled",
+          "rife"
+        ],
+        "tag": "ai_upscale"
+      },
+      {
+        "if_container_in": [
+          "m2ts",
+          "mpegts"
+        ],
+        "tag": "full_disc"
+      },
+      {
+        "if_basename_endswith_any": [
+          ".m2ts"
+        ],
+        "tag": "full_disc"
+      },
+      {
+        "if_file_contains": [
+          "remux"
+        ],
+        "tag": "remux"
+      },
+      {
+        "if_file_contains": [
+          "web-dl",
+          "webdl",
+          "webrip",
+          "web rip",
+          "hmax",
+          "amzn",
+          "nf",
+          "dsnp"
+        ],
+        "tag": "web"
+      },
+      {
+        "if_file_contains": [
+          "bluray",
+          "blu-ray",
+          "bdrip",
+          "bdrip",
+          "uhdrip"
+        ],
+        "tag": "bluray"
+      },
+      {
+        "if_file_contains": [
+          "repack"
+        ],
+        "tag": "repack"
+      },
+      {
+        "default": "encode"
+      }
+    ],
+    "source_rank": {
+      "full_disc": 9.0,
+      "dirtyhippie": 8.5,
+      "ai_upscale": 8.5,
+      "remux": 8.0,
+      "bluray": 6.5,
+      "web": 6.0,
+      "repack": 5.5,
+      "encode": 5.0
+    },
+    "audio_codec_score": {
+      "truehd_atmos": 9.5,
+      "dts_x": 9.3,
+      "truehd": 9.0,
+      "dts_hd": 8.8,
+      "flac_lpcm_pcm": 8.7,
+      "dolby_digital_plus_atmos": 6.7,
+      "dolby_digital_plus_or_ddp": 6.2,
+      "dts": 6.0,
+      "dolby_digital_atmos": 6.1,
+      "dolby_digital_or_ac3": 5.7,
+      "opus": 4.9,
+      "aac": 4.8,
+      "mp3": 4.0,
+      "default": 3.8
+    },
+    "audio_channel_bonus": {
+      "7.1": 0.8,
+      "6.1": 0.65,
+      "5.1": 0.5,
+      "4.0": 0.25,
+      "3.0": 0.15,
+      "2.0": 0.1,
+      "1.0": 0.0,
+      "default": 0.0
+    },
+    "audio_score_formula": "audio_codec_score + channel_bonus + min(2.5, log(1 + bitrate_kbps) / 4)"
+  },
+  "italian_audio_detection": {
+    "authoritative_order": [
+      "Debug_Streams",
+      "Debug_XML",
+      "Library fallback"
+    ],
+    "positive_language_tokens": [
+      "italian",
+      "italiano",
+      "ita",
+      "it"
+    ],
+    "negative_language_tokens": [
+      "latino",
+      "latin american",
+      "castilian",
+      "spanish",
+      "espanol",
+      "spa"
+    ],
+    "with_debug_streams": {
+      "scan_only_audio_streams": true,
+      "positive_if_any_stream_matches": [
+        "st_language normalized equals a positive token",
+        "st_languageTag normalized equals a positive token",
+        "st_languageCode normalized equals a positive token",
+        "st_title or st_displayTitle or st_extendedDisplayTitle contains a positive token as a standalone word and does not contain a negative token"
+      ],
+      "output_field": "has_real_it"
+    },
+    "with_debug_xml": {
+      "positive_if_any_of": [
+        "dbg_audio_it_language normalized equals a positive token",
+        "dbg_audio_it_languageCode normalized equals a positive token",
+        "dbg_audio_it_title or dbg_audio_it_displayTitle or dbg_audio_it_extendedDisplayTitle contains a positive token as a standalone word and does not contain a negative token",
+        "dbg_audio_streams text contains an explicit Italian token and no contradictory negative token for the same stream"
+      ],
+      "output_field": "has_real_it"
+    },
+    "without_debug": {
+      "rule": "has_real_it = audio_it_bitrate_mbps > 0",
+      "note": "This is a fallback only. Debug-derived language wins over Library-derived language."
+    },
+    "full_disc_unknown_language_handling": {
+      "applies_when": [
+        "row source_tag is full_disc",
+        "all detected audio languages in Debug_Streams / Debug_XML are missing, unknown, or unlabeled"
+      ],
+      "effect": [
+        "Set the language status for Italian-audio conflict handling to unknown, not false.",
+        "Unknown full-disc language must not by itself trigger the Italian-vs-no-Italian manual override.",
+        "The row may still be kept as full-disc/original and paired with one technical copy."
+      ]
+    },
+    "same_tier_populated_audio_it_slot_fallback": {
+      "purpose": "Mimic the reference workbook in same-tier cases where the Library audio_it slot is populated on one row and empty on another row, even if debug language metadata is noisy or partially contradictory.",
+      "trigger": [
+        "same resolution tier",
+        "same HDR tier",
+        "candidate row has a populated Library audio_it slot",
+        "comparison row has an empty Library audio_it slot",
+        "candidate is not merely a full_disc row with unknown language"
+      ],
+      "effect": "Treat the populated-vs-empty audio_it slot as a possible Italian-audio edge for MANUALE evaluation."
+    },
+    "output_state_model": {
+      "field": "italian_audio_state",
+      "allowed_values": [
+        "yes",
+        "no",
+        "unknown"
+      ],
+      "mapping": [
+        "yes when Debug_Streams or Debug_XML positively confirms Italian audio",
+        "no when debug sources positively exclude Italian audio or confirm only other languages and the evidence is strong",
+        "unknown when debug data is absent, incomplete, contradictory, or opaque, especially on full_disc rows"
+      ]
+    },
+    "decision_use_rule": [
+      "For Italian-vs-non-Italian conflict detection, count only yes vs no.",
+      "Do not treat unknown as no.",
+      "same-tier ordinary rows may still use a populated Library audio_it slot as a weak fallback signal when debug evidence is missing or noisy.",
+      "full_disc rows with unknown language remain unknown, not no."
+    ]
+  },
+  "hard_overrides": {
+    "title_specific_rules_forbidden": true,
+    "group_specific_rules_forbidden": true,
+    "explicit_keep_all_groups": [],
+    "match_rule": "No title-specific or group-id-specific hard override is allowed in this version.",
+    "effect": "No hard override is applied. The classifier must rely on general rules only."
+  },
+  "special_keeps": {
+    "dirtyhippie": {
+      "default_action": "keep",
+      "notes": [
+        "Keep by default.",
+        "Does not override the 4K low-bitrate penalty if the row is lowbit4k_penalized.",
+        "When paired with one better technical copy in the same cut, prefer a CONSERVA outcome rather than MANUALE unless a real Italian-vs-no-Italian conflict still remains.",
+        "A DirtyHippie row may coexist with a full-disc row or with one conventional Italian copy; prefer CONSERVA over MANUALE in these pairings."
+      ]
+    },
+    "ai_upscale": {
+      "default_action": "keep",
+      "notes": [
+        "Keep by default.",
+        "Does not override the 4K low-bitrate penalty if the row is lowbit4k_penalized.",
+        "When paired with one better technical copy in the same cut, prefer a CONSERVA outcome rather than MANUALE unless a real Italian-vs-no-Italian conflict still remains.",
+        "An AI-upscale / DirtyHippie row may coexist with one conventional Italian copy when that matches the reference report's special-copy pattern."
+      ]
+    },
+    "full_disc": {
+      "default_action": "keep",
+      "notes": [
+        "Keep as original/source-rich version.",
+        "May coexist with one best technical copy in the same duration cluster.",
+        "When the only residual tension is source richness or the special/original nature of the disc, prefer CONSERVA rather than MANUALE.",
+        "If language metadata is unknown on a full-disc row, treat it as language-opaque rather than as a confirmed no-Italian row.",
+        "A full-disc row plus one technical row with explicit Italian audio should normally remain CONSERVA.",
+        "A full_disc row is special/original by default; absent contrary evidence, its originality value is real even if language metadata is incomplete."
+      ]
+    },
+    "max_kept_rows_per_duration_cluster_without_hard_override": 2,
+    "allowed_pairing_per_cluster": [
+      "one special/original copy",
+      "one best technical copy",
+      "two special/original copies when both are independently valuable (for example full_disc plus DirtyHippie/AI-upscale)",
+      "these pairings should normally classify as CONSERVA, not MANUALE, unless no row is special/original and a true same-tier Italian-audio conflict still remains"
+    ],
+    "notes_global": [
+      "Reference-report bias: pairings involving special/original rows should stay in CONSERVA whenever the non-special companion is the obvious technical copy to keep alongside them.",
+      "This bias overrides a generic Italian-vs-no-Italian MANUALE escalation unless the companion rows are same-tier ordinary encodes with a true unresolved trade-off and no special/original row is involved."
+    ]
+  },
+  "movie_duration_rules": {
+    "movie": {
+      "same_cut_if_difference_seconds_lt": 60,
+      "different_cut_if_difference_seconds_gte": 60,
+      "action_for_different_cuts": "When movie runtime delta is 60 seconds or more, treat the rows as different cuts by default and keep one best version per duration cluster. However, if no special/original row is involved and the only remaining tension is a real Italian-vs-no-Italian conflict between ordinary copies, keep the group in MANUALE instead of auto-CONSERVA."
+    },
+    "tv": {
+      "use_duration": false
+    }
+  },
+  "conditional_4k_low_bitrate_rule": {
+    "applies_to": "movies_only",
+    "condition": {
+      "candidate_is_4k": true,
+      "candidate_video_bitrate_mbps_lt": 12.0,
+      "same_group_has_1080p_with_bitrate_video_mbps_gt": 1.5
+    },
+    "effect": "Mark the 4K row as lowbit4k_penalized = true.",
+    "if_no_valid_1080p_exists": "Do not penalize the 4K row automatically, even if bitrate < 12 Mbps."
+  },
+  "deterministic_thresholds": {
+    "numeric_precision_for_reason_text": {
+      "bitrate_mbps_decimals": 3,
+      "size_gib_decimals": 3
+    },
+    "video_similarity": {
+      "same_resolution_required": true,
+      "same_hdr_required": true,
+      "max_relative_bitrate_delta_pct": 10.0,
+      "max_absolute_bitrate_delta_mbps": 2.0,
+      "rule": "Two rows are video-similar only if both the relative bitrate delta and the absolute bitrate delta stay within these limits."
+    },
+    "video_better": {
+      "evaluation_order": [
+        "lowbit4k_penalized: false beats true",
+        "if video-similar is true, neither row is video-better",
+        "higher bitrate_mbps_video wins",
+        "if bitrate tie within 0.001 Mbps, higher resolution_rank wins",
+        "if resolution tie, higher hdr_rank wins",
+        "a full resolution-tier loss or HDR-tier loss is a strong video disadvantage that normally outranks a non-special Italian-audio edge on the worse-video row"
+      ],
+      "meaningful_bitrate_advantage_pct": 15.0
+    },
+    "audio_it_better": {
+      "minimum_audio_score_delta": 0.35,
+      "none_vs_present_rule": "A row with real Italian audio always beats a row with no real Italian audio for the secondary audio comparison.",
+      "rule": "If both rows have real Italian audio, first apply audio_lossless_lossy_guardrails and audio_cross_codec_guardrails, then compare audio_it_score and require at least the minimum delta. Do not let an Italian-audio edge alone force MANUALE when the candidate loses a full resolution tier or HDR tier and is not a special/original row."
+    },
+    "audio_en_better": {
+      "minimum_audio_score_delta": 0.25,
+      "rule": "First apply audio_lossless_lossy_guardrails and audio_cross_codec_guardrails, then compare audio_en_score and require at least the minimum delta."
+    },
+    "source_conflict": {
+      "minimum_source_rank_delta": 99.0,
+      "always_conflict_if_one_source_tag_in": [],
+      "rule": "Source differences are informative for reason text, but they do not by themselves force REVIEW_MANUAL. A source conflict should matter only when it accompanies a real unresolved trade-off after applying the old-report comparison order."
+    },
+    "audio_it_slot_presence_conflict": {
+      "trigger": [
+        "same resolution tier",
+        "same HDR tier",
+        "one row has a populated audio_it slot and the other does not"
+      ],
+      "effect": "Escalate to MANUALE when that populated-vs-empty Italian-audio slot is the main remaining counterweight after video comparison."
+    },
+    "audio_cross_codec_guardrails": {
+      "purpose": "Prevent nominal codec efficiency or label prestige from overriding large bitrate disadvantages in lossy-vs-lossy comparisons.",
+      "applies_to": [
+        "audio_it_better",
+        "audio_en_better"
+      ],
+      "lossy_large_bitrate_gap_rule": {
+        "applies_when": [
+          "both compared tracks are lossy",
+          "same channel count or same broad channel tier"
+        ],
+        "rule": "A codec-family advantage alone must not make the lower-bitrate track audio_better when candidate_bitrate_kbps < 0.5 * comparison_bitrate_kbps."
+      },
+      "ddp_vs_dd_specific_rule": {
+        "applies_when": [
+          "candidate codec family is Dolby Digital Plus / E-AC-3",
+          "comparison codec family is Dolby Digital / AC-3",
+          "same channel count"
+        ],
+        "rule": "Dolby documents describe Dolby Digital Plus as up to twice as efficient as Dolby Digital for delivery use cases. Therefore DD+ may be considered better than DD on codec efficiency only when candidate_bitrate_kbps * 2 > comparison_bitrate_kbps. If candidate_bitrate_kbps * 2 <= comparison_bitrate_kbps, DD+ is not audio_better.",
+        "inverse_rule": "Conversely, a higher-bitrate DD track may beat a much lower-bitrate DD+ track even if the raw codec prior is lower."
+      }
+    },
+    "audio_broad_channel_tiers": {
+      "purpose": "Define broad channel families so codec guardrails can be executed deterministically.",
+      "tiers": {
+        "mono": [
+          "1.0"
+        ],
+        "stereo_or_matrix": [
+          "2.0",
+          "3.0",
+          "4.0"
+        ],
+        "surround": [
+          "5.1",
+          "6.1"
+        ],
+        "high_surround_or_immersive_bed": [
+          "7.1"
+        ]
+      },
+      "comparison_rule": "same broad channel tier means both channel layouts appear in the same tier list above; one-step channel advantage means the candidate is in the next higher tier only."
+    },
+    "audio_codec_classification": {
+      "purpose": "Provide deterministic codec-family classes for audio comparison guardrails.",
+      "lossless_or_master_family": [
+        "truehd_atmos",
+        "dts_x",
+        "truehd",
+        "dts_hd",
+        "flac_lpcm_pcm"
+      ],
+      "lossy_family": [
+        "dolby_digital_plus_atmos",
+        "dolby_digital_plus_or_ddp",
+        "dts",
+        "dolby_digital_atmos",
+        "dolby_digital_or_ac3",
+        "opus",
+        "aac",
+        "mp3"
+      ],
+      "unknown_family_rule": "Unknown codecs are treated conservatively and must not win on codec prior alone."
+    },
+    "audio_lossless_lossy_guardrails": {
+      "purpose": "Keep lossless-vs-lossy comparisons physically grounded and avoid granting automatic wins to lossy tracks merely because of channel count or codec label.",
+      "applies_to": [
+        "audio_it_better",
+        "audio_en_better"
+      ],
+      "same_broad_channel_tier_rule": {
+        "applies_when": [
+          "candidate track is lossy",
+          "comparison track is lossless_or_master_family",
+          "same broad channel tier"
+        ],
+        "rule": "Within the same broad channel tier, the lossy candidate is not audio_better than the lossless comparison."
+      },
+      "one_step_channel_advantage_rule": {
+        "applies_when": [
+          "candidate track is lossy",
+          "comparison track is lossless_or_master_family",
+          "candidate has only a one-step broad-channel-tier advantage"
+        ],
+        "rule": "A one-step channel-count advantage is not enough by itself to declare the lossy candidate audio_better than the lossless comparison."
+      }
+    },
+    "audio_unknown_codec_handling": {
+      "purpose": "Avoid optimistic outcomes for codecs that were not explicitly mapped.",
+      "rule": "When codec family is unknown, use ranking_functions.audio_codec_score.default and do not allow unknown-family advantage alone to satisfy audio_better."
+    }
+  },
+  "primary_sort_order_for_technical_preference": [
+    "lowbit4k_penalized ascending",
+    "bitrate_mbps_video descending",
+    "resolution_rank descending",
+    "hdr_rank descending",
+    "audio_it_score descending",
+    "source_rank descending",
+    "audio_en_score descending",
+    "size_gib descending",
+    "normalized_basename ascending"
+  ],
+  "keeper_selection": {
+    "normal_case": "Pick the best row using primary_sort_order_for_technical_preference.",
+    "different_duration_clusters": "For movies with multiple duration clusters, pick at least one keeper per cluster by default once the runtime delta is 60 seconds or more, unless the group is explicitly left MANUALE by the Italian-vs-no-Italian exception for ordinary non-special copies.",
+    "with_special_keeps": [
+      "Keep dirtyhippie rows unless lowbit4k_penalized.",
+      "Keep ai_upscale rows unless lowbit4k_penalized.",
+      "Keep full_disc rows.",
+      "If a better technical row exists in the same cluster and the cluster would otherwise contain only a special/original keeper, keep that technical row too and prefer CONSERVA for the special/original + best-technical pairing.",
+      "Do not exceed the cluster keep limit unless a hard override keeps the whole group.",
+      "If a full_disc row with unknown language metadata is paired with an ordinary technical row, keep both and prefer CONSERVA rather than interpreting the full_disc row as no-Italian.",
+      "If one row is DirtyHippie / AI-upscale and the other is either full_disc or the best conventional Italian technical copy, keep both and prefer CONSERVA."
+    ],
+    "keep_stimato_definition_for_manual_groups": "The best overall technical row under primary_sort_order_for_technical_preference, but only inside groups that remain genuinely manual after applying the target-report style."
+  },
+  "italian_vs_non_italian_override": {
+    "trigger": [
+      "At least one row in the group has italian_audio_state = yes",
+      "At least one row in the group has italian_audio_state = no",
+      "Rows with italian_audio_state = unknown do not trigger the override",
+      "Group is not exempted by a stronger general pattern such as different cuts or special/original plus best technical companion"
+    ],
+    "best_it_version": "Choose the best Italian row by resolution_rank DESC, bitrate_mbps_video DESC, hdr_rank DESC, size_gib DESC, normalized_basename ASC.",
+    "best_noit_version": "Choose the best non-Italian row by resolution_rank DESC, bitrate_mbps_video DESC, hdr_rank DESC, size_gib DESC, normalized_basename ASC.",
+    "manual_if_best_it_is_worse_on_any_of": [
+      "resolution_rank",
+      "hdr_rank",
+      "bitrate_mbps_video",
+      "same-tier populated-audio_it-slot vs empty-audio_it-slot trade-off"
+    ],
+    "effect": "Escalate only the genuinely unresolved portion of the group to MANUALE when the best Italian row and the best non-Italian row trade off meaningful advantages within the same broad video tier. Suppress escalation when a report-like general pattern already resolves the group as CONSERVA or automatic deletion.",
+    "manual_row_policy": [
+      "KEEP_STIMATO = best overall technical row under keeper_selection.keep_stimato_definition_for_manual_groups.",
+      "Only the rows participating in a still-unresolved Italian-vs-no-Italian conflict become MANUALE.",
+      "If the target-report style would clearly keep a special/original copy alongside one best technical copy, prefer CONSERVA instead of converting the whole group to MANUALE.",
+      "Rows that are clearly dominated and not part of the conflict may still be ELIMINA_SICURO or ELIMINA_PROPOSTI within the manual sheet.",
+      "If the candidate with better Italian audio also loses a full resolution tier or HDR tier and is not special/original, prefer automatic deletion rather than MANUALE.",
+      "If the rows are same-tier and the main unresolved edge is Italian-audio presence or quality, prefer MANUALE."
+    ],
+    "reference_report_suppressions": [
+      "Suppress MANUALE when the only no-Italian row is a full_disc row with unknown language metadata and the companion row is the obvious Italian technical keep.",
+      "Suppress MANUALE when the pair is special/original plus best technical copy, including DirtyHippie / AI-upscale pairings.",
+      "Do not suppress MANUALE for ordinary same-tier encode-vs-encode conflicts where one row's main remaining edge is Italian audio."
+    ],
+    "dominant_intent": "Escalate to MANUALE only for real unresolved trade-offs. Suppress escalation for special/original pairings and for clearly lower-tier video rows whose only strong edge is Italian audio.",
+    "broad_video_tier_definition": [
+      "same resolution tier",
+      "or at most a borderline difference that the reference workbook still treats as same-tier",
+      "but not a full 1080p-vs-2160p gap unless the special/original policy explicitly keeps both"
+    ]
+  },
+  "comparison_helpers": {
+    "video_similar": "Use deterministic_thresholds.video_similarity.",
+    "video_better": "Use deterministic_thresholds.video_better.",
+    "audio_it_better": "Use deterministic_thresholds.audio_it_better.",
+    "audio_en_better": "Use deterministic_thresholds.audio_en_better.",
+    "source_conflict": "Use deterministic_thresholds.source_conflict."
+  },
+  "row_classification_rules": {
+    "ELIMINA_SICURO": [
+      "If row.lowbit4k_penalized == true.",
+      "If keeper is better on both video and Italian audio.",
+      "If keeper is video-better and the non-kept row is not materially audio_it_better.",
+      "If keeper wins by a full resolution tier or HDR tier and the candidate's only meaningful remaining edge is Italian audio on an ordinary non-special copy.",
+      "If video is similar and keeper has better Italian audio.",
+      "If differences are small and the row is redundant, even if the source tag differs, provided no real Italian-vs-no-Italian conflict remains."
+    ],
+    "ELIMINA_PROPOSTI": [
+      "Use when the non-kept row's only meaningful remaining edge is English audio.",
+      "This applies especially to same-resolution, same-HDR, video-similar rows where Italian audio is equivalent and the residual advantage is only English-audio quality/bitrate.",
+      "Do not use ELIMINA_PROPOSTI if Italian audio, special/original value, or unresolved Italian-vs-no-Italian conflict still matters."
+    ],
+    "MANUALE": [
+      "If keeper is video-better but the other row is materially audio_it_better and both rows remain in the same broad video tier.",
+      "If video is similar but the other row is audio_it_better.",
+      "If the rows are same-tier and one row has a populated audio_it slot while the other does not, and that is the main remaining trade-off.",
+      "If Italian-vs-non-Italian override is triggered and no report-like CONSERVA or automatic deletion pattern resolves the case.",
+      "If multiple meaningful advantages are split across same-tier ordinary rows and none dominates enough for automatic deletion.",
+      "Prefer MANUALE for ordinary same-tier encode-vs-encode or encode-vs-web conflicts where Italian-audio advantage remains the main unresolved counterweight.",
+      "Do not force MANUALE for full_disc-vs-technical or DirtyHippie/AI-upscale-vs-technical pairings when the reference-style special/original CONSERVA pattern already resolves the group."
+    ],
+    "CONSERVA": [
+      "Keep multiple rows when they represent genuinely different movie cuts under movie_duration_rules.",
+      "Keep multiple rows when one row is special/original (full_disc, DirtyHippie, AI-upscale) and another row is the best obvious technical companion for the same cut.",
+      "Keep multiple rows when the only remaining distinction is original/special preservation value plus one clearly superior conventional watch copy.",
+      "Do not convert these patterns to MANUALE unless a still-unresolved same-tier Italian-vs-non-Italian conflict remains."
+    ]
+  },
+  "group_classification_rules": {
+    "CONSERVA": "Group has two or more deliberate KEEP rows and no REVIEW_MANUAL rows. Typical causes: different cuts, or special/original row plus best technical companion.",
+    "MANUALE": "Group has at least one REVIEW_MANUAL row after applying all suppression rules for different cuts and special/original companion patterns.",
+    "AUTO_GROUP": "Group has exactly one final keeper and all other rows are DELETE_SAFE or DELETE_PROPOSED."
+  },
+  "output_contract": {
+    "recommended_output_columns": [
+      "group_key",
+      "title_or_episode",
+      "file_path",
+      "basename",
+      "final_action",
+      "reason",
+      "source_sheet",
+      "manual_sheet_prefix",
+      "keep_reference"
+    ],
+    "final_action_values": [
+      "KEEP",
+      "REVIEW_MANUAL",
+      "DELETE_SAFE",
+      "DELETE_PROPOSED"
+    ],
+    "keep_reference_rule": "For delete rows, optionally store the basename or path of the keeper/KEEP_STIMATO used for comparison if available.",
+    "file_targeting_rule": "Every actionable row must target file_path derived from the inventory/report file field. Never emit delete or keep actions keyed only by rating_key.",
+    "keeper_reason_constant": "In manual detail sheets, the KEEP_STIMATO row should use 'versione tenuta con le regole attuali'.",
+    "reason_fields_by_sheet": {
+      "ELIMINA_SICURO / ELIMINA_PROPOSTI": "Reason",
+      "manual detail sheets": "Reason",
+      "MANUALE_INDEX": "Motivo revisione",
+      "CONSERVA": "Motivo conservazione"
+    },
+    "reason_generation_rule": "Whenever a reason-like field is generated, it must comply with report_style_reason_generation and reproduce the clause format of the reference workbook.",
+    "machine_readability_requirements": [
+      "Every condition written in this JSON must be treated as executable policy, not as optional commentary.",
+      "Where this JSON defines precedence or suppression rules, the implementation must honor them in order.",
+      "If a field is unknown, preserve the unknown state instead of collapsing it to false."
+    ]
+  },
+  "full_workflow": [
+    "Normalize rows and compute derived fields.",
+    "Interpret identifiers correctly: rating_key is content-level, file is physical-file-level.",
+    "Group duplicates using grouping rules, including TV year disambiguation when year is present.",
+    "Derive source tags, duration clusters, resolution/HDR/audio ranks, and Italian-audio tri-state.",
+    "Apply low-bitrate 4K penalty.",
+    "Apply different-cut handling for movies.",
+    "Apply special/original companion keep logic.",
+    "Select the primary technical keeper candidate.",
+    "Apply Italian-vs-non-Italian override only when the conflict is real and unresolved.",
+    "Apply audio guardrails for lossless-vs-lossy and cross-codec bitrate gaps before declaring audio_it_better or audio_en_better.",
+    "Classify remaining rows with row_classification_rules.",
+    "Assign group status using group_classification_rules.",
+    "Emit final actions using output_contract.",
+    "If a reference report is available, use it only to evaluate fit and refine general rules without introducing title-specific exceptions."
+  ],
+  "practical_copy_paste_rules": [
+    "Use rating_key to join Library, Debug_XML, and Debug_Streams whenever possible.",
+    "Treat rating_key as the movie/episode identifier and file as the unique physical-file identifier.",
+    "Use imdb_id for movie grouping, then tmdb_id, then normalized title+year fallback.",
+    "Use title+year+season+episode for TV grouping when year is present; fall back to title+season+episode only when year is missing.",
+    "Ignore framerate.",
+    "For TV, ignore duration.",
+    "For movies, treat durations within 60 seconds as the same cut by default.",
+    "If movie runtime difference is 60 seconds or more, treat the copies as different cuts unless strong evidence proves otherwise.",
+    "Apply the 4K<12 rule only when a 1080p > 1.5 Mbps exists in the same movie group.",
+    "Use video as the primary decision axis, then Italian audio, then source/original value, then English audio.",
+    "When comparing lossy Italian audio codecs, do not let a nominally more efficient codec beat a much higher-bitrate track solely by codec label; in particular, DD+ must not outrank DD when DD+ bitrate * 2 <= DD bitrate at the same channel count.",
+    "Recognize 4.0 and 6.1 as explicit channel layouts rather than collapsing them to default.",
+    "Treat unknown audio codecs conservatively; unknown must not win on codec label alone.",
+    "A one-step channel-count increase is not enough by itself to make a lossy track beat a lossless/master-family track.",
+    "Within the same broad channel tier, do not let a lossy track outrank a lossless/master-family track.",
+    "Apply the same audio guardrails to English-audio comparisons, not only to Italian-audio comparisons.",
+    "Use MANUALE only for unresolved same-tier trade-offs.",
+    "Prefer CONSERVA for different cuts and for special/original plus best-technical pairings.",
+    "Reserve DELETE_PROPOSED for residual English-audio-only advantages after core video and Italian audio are already resolved."
+  ],
+  "failure_conditions": [
+    "Do not introduce title-specific or group-specific hard overrides.",
+    "Do not collapse italian_audio_state=unknown into no.",
+    "Do not guess missing full paths for KEEP rows if neither report nor inventory can resolve them.",
+    "Do not use duplicate '(2)' manual sheets unless they are the first authoritative sheet for that MANUALE_INDEX prefix.",
+    "Do not auto-delete when a row still has a meaningful Italian-audio, source-richness, or Italian-vs-no-Italian tradeoff.",
+    "Do not silently downgrade a REVIEW_MANUAL case to DELETE_SAFE."
+  ],
+  "identity_model": {
+    "content_identifier": {
+      "field": "rating_key",
+      "scope": "Identifies the Plex logical content item: one movie or one TV episode.",
+      "is_unique_per_file": false,
+      "allowed_cardinality": "One rating_key can map to multiple physical files when Plex has duplicates or alternate versions for the same movie/episode.",
+      "allowed_uses": [
+        "Join Library, Debug_XML, and Debug_Streams at content level.",
+        "Recognize that multiple rows can belong to the same movie or episode.",
+        "Never target a delete or keep action using rating_key alone."
+      ]
+    },
+    "file_identifier": {
+      "field": "file",
+      "scope": "Identifies the physical file copy.",
+      "definition": "The unique file identifier is the full path including the filename.",
+      "is_unique_per_file": true,
+      "allowed_uses": [
+        "Target KEEP / REVIEW_MANUAL / DELETE_SAFE / DELETE_PROPOSED actions.",
+        "Resolve the exact copy to keep or delete.",
+        "Write report outputs and downstream action files."
+      ]
+    },
+    "implementation_guardrails": [
+      "Use rating_key as the content-level identifier, not as the unique file identifier.",
+      "Use file as the authoritative unique identifier for a concrete copy because it already contains path plus filename.",
+      "If downstream tooling ever separates directory path and filename, reconstruct the full file identifier as path + filename before generating actions.",
+      "All delete and keep decisions must point to file, never to rating_key alone."
+    ]
+  },
+  "report_style_reason_generation": {
+    "purpose": "Force generated explanations to use the same technical wording style seen in the reference report workbook, so that the JSON does not only classify but also prescribes how to verbalize each decision.",
+    "scope": [
+      "row-level Reason fields in ELIMINA_SICURO / ELIMINA_PROPOSTI",
+      "row-level Reason fields inside manual detail sheets",
+      "group-level Motivo revisione in MANUALE_INDEX",
+      "group-level Motivo conservazione in CONSERVA",
+      "KEEP_STIMATO reason text inside manual detail sheets"
+    ],
+    "language": "Italian",
+    "orientation_rule": "At row level, explain the file under evaluation relative to the selected keeper or KEEP_STIMATO. Candidate values go on the left side of comparisons; keeper values go on the right side.",
+    "string_style": {
+      "separator": " ; ",
+      "start_lowercase": true,
+      "end_without_final_period": true,
+      "prefer_short_technical_clauses": true,
+      "do_not_write_paragraphs": true,
+      "preserve_report_terminology": [
+        "bitrate video inferiore",
+        "audio IT inferiore",
+        "audio IT migliore sul file da valutare",
+        "risoluzione inferiore",
+        "HDR inferiore",
+        "sorgente diversa",
+        "vantaggi incrociati: video vs audio/sorgente",
+        "video simile ma audio IT migliore sull'altra copia",
+        "differenze contenute: copia ridondante",
+        "regola 2160p",
+        "vantaggio residuo audio EN sul file da valutare",
+        "resta un vantaggio secondario audio EN",
+        "la copia con audio italiano è tecnicamente peggiore della migliore copia senza italiano su:"
+      ]
+    },
+    "numeric_formatting": {
+      "video_bitrate_unit": "Mbps",
+      "audio_bitrate_unit": "kbps inside audio labels",
+      "video_bitrate_decimals": 3,
+      "audio_bitrate_display_rule": "Reuse the normalized human-readable audio label already shown in the report, for example 'Dolby Digital 5.1 640 kbps' or 'DTS-HD MA 5.1 1536 kbps'.",
+      "comparison_format": "{candidate_value} < {keeper_value} unit or {candidate_value} > {keeper_value} unit"
+    },
+    "clause_order_rules": {
+      "ELIMINA_SICURO_or_ELIMINA_PROPOSTI": [
+        "If lowbit4k_penalized, use only the dedicated 4K rule sentence unless other clauses are strictly needed for disambiguation.",
+        "If ELIMINA_PROPOSTI is driven only by an English-audio edge, use 'vantaggio residuo audio EN sul file da valutare ; resta un vantaggio secondario audio EN'.",
+        "Otherwise append clauses in this order when true: video bitrate disadvantage, Italian-audio disadvantage, resolution disadvantage, HDR disadvantage, source difference, residual summary clause.",
+        "Use 'differenze contenute: copia ridondante' only when no more specific technical tradeoff needs to be verbalized."
+      ],
+      "MANUALE_detail_row": [
+        "Start from the technical disadvantage clauses of the file under evaluation versus KEEP_STIMATO.",
+        "If the candidate has the better Italian track while losing on video or source, use 'audio IT migliore sul file da valutare (...)'.",
+        "If the case is mainly a similar-video / better-Italian-audio split, close with 'video simile ma audio IT migliore sull'altra copia'.",
+        "If the case is a broader split between video and audio/source advantages, close with 'vantaggi incrociati: video vs audio/sorgente'."
+      ],
+      "KEEP_STIMATO_detail_row": [
+        "Use the constant phrase 'versione tenuta con le regole attuali' to match the report style."
+      ],
+      "MANUALE_INDEX_group_reason": [
+        "If the unresolved case is a video-vs-audio/source tradeoff, use 'restano vantaggi incrociati tra bitrate video e audio IT / sorgente'.",
+        "If one copy has Italian audio and the other does not, and the Italian copy loses technically on key attributes, use 'una copia ha audio italiano e l’altra no: la versione italiana è peggiore su alcune caratteristiche, quindi il gruppo va in manuale'.",
+        "If the decisive unresolved pattern is 'best no-Italian copy is technically stronger than the best Italian ordinary copy', allow the more explicit phrase 'una copia ha audio italiano e l’altra no: la versione italiana è peggiore su alcune caratteristiche, quindi il gruppo va in manuale'."
+      ],
+      "CONSERVA_group_reason": [
+        "Compose the conservation reason by joining the applicable stock clauses with ' ; '.",
+        "Prefer the same stock clauses used in the report, such as different cut, special/original keep, marked keep, or technical copy kept alongside the special/original one."
+      ]
+    },
+    "row_level_clause_templates": {
+      "video_bitrate_lower": "bitrate video inferiore ({candidate_video_mbps:.3f} < {keeper_video_mbps:.3f} Mbps)",
+      "audio_it_lower": "audio IT inferiore ({candidate_audio_it_label} < {keeper_audio_it_label})",
+      "audio_it_better_on_candidate": "audio IT migliore sul file da valutare ({candidate_audio_it_label} > {keeper_audio_it_label})",
+      "resolution_lower": "risoluzione inferiore: {candidate_resolution} vs {keeper_resolution}",
+      "hdr_lower": "HDR inferiore: {candidate_hdr} vs {keeper_hdr}",
+      "source_different": "sorgente diversa ({candidate_source} vs {keeper_source})",
+      "video_similar_audio_it_better_other_copy": "video simile ma audio IT migliore sull'altra copia",
+      "cross_advantages_video_vs_audio_source": "vantaggi incrociati: video vs audio/sorgente",
+      "redundant_copy_small_differences": "differenze contenute: copia ridondante",
+      "lowbit4k_rule": "regola 2160p: 4K {candidate_video_mbps:.3f} Mbps sotto 12 Mbps con 1080p valida presente",
+      "english_audio_residual_advantage": "vantaggio residuo audio EN sul file da valutare",
+      "english_audio_secondary_summary": "resta un vantaggio secondario audio EN"
+    },
+    "group_level_clause_templates": {
+      "different_movie_cut": "durata diversa del film: tengo una versione per ciascun taglio",
+      "dirtyhippie_ai_keep": "DirtyHippie / AI-upscale da tenere",
+      "full_disc_keep": "full-disc/originale da tenere",
+      "explicit_marked_keep": "titolo marcato esplicitamente da conservare",
+      "analog_keep": "titolo da tenere per analogia con i casi marcati",
+      "paired_technical_copy": "copia tecnica da tenere accanto alla versione speciale/originale",
+      "manual_cross_advantages_group": "restano vantaggi incrociati tra bitrate video e audio IT / sorgente",
+      "manual_it_vs_non_it_group": "una copia ha audio italiano e l’altra no: la versione italiana è peggiore su alcune caratteristiche, quindi il gruppo va in manuale",
+      "manual_current_keeper_constant": "versione tenuta con le regole attuali",
+      "manual_it_vs_non_it_specific": "la copia con audio italiano è tecnicamente peggiore della migliore copia senza italiano su:"
+    },
+    "suppression_rules": [
+      "Do not mention codec video in the prose unless it is the only material differentiator and omitting it would hide the real reason of the decision.",
+      "Do not restate group identifiers, titles, or file paths inside the reason string.",
+      "Do not mix English prose with Italian report phrasing.",
+      "Do not append generic labels like 'automatic decision' or 'manual review needed' if a stock report clause already conveys that information."
+    ],
+    "generation_algorithm": [
+      "1. Identify the comparison target: keeper for automatic delete rows, KEEP_STIMATO for manual detail rows, or applicable group stock clauses for CONSERVA / MANUALE_INDEX.",
+      "2. Compute the set of active technical deltas: video bitrate, Italian audio, resolution, HDR, source tag, lowbit4k penalty, Italian-vs-no-Italian override, same-cut vs different-cut, special keep tags.",
+      "3. Convert each active delta into the exact stock clause template above.",
+      "4. Order the clauses using clause_order_rules for the destination sheet.",
+      "5. Join the clauses with ' ; ' and emit the final explanation without a trailing period.",
+      "6. If no specific technical delta survives and the copy is merely redundant, emit 'differenze contenute: copia ridondante'."
+    ],
+    "examples_from_reference_style": {
+      "safe_delete_example": "bitrate video inferiore (14.744 < 85.063 Mbps) ; audio IT inferiore (DTS 2.0 1536 kbps < DTS-HD MA 2.0 1536 kbps) ; risoluzione inferiore: 1080p vs 2160p ; sorgente diversa (encode vs remux)",
+      "manual_example": "bitrate video inferiore (31.930 < 64.552 Mbps) ; audio IT migliore sul file da valutare (Dolby Digital 5.1 640 kbps > Dolby Digital Plus 5.1 192 kbps) ; vantaggi incrociati: video vs audio/sorgente",
+      "manual_similar_video_example": "audio IT inferiore (Dolby Digital Plus 5.1 192 kbps < DTS-HD MA 5.1 1536 kbps) ; video simile ma audio IT migliore sull'altra copia",
+      "conserva_example": "DirtyHippie / AI-upscale da tenere ; copia tecnica da tenere accanto alla versione speciale/originale"
+    }
+  },
+  "reference_alignment_notes": [
+    "This version is intentionally title-agnostic.",
+    "The reference report is used only to infer dominant tendencies that can be generalized.",
+    "Main generalized tendencies: strong CONSERVA bias for special/original plus best-technical pairings; 60-second movie cut split; MANUALE mostly for same-tier cross-advantages; DELETE_PROPOSED only for residual English-audio-only edges.",
+    "Unknown-language full-disc rows are language-opaque, not confirmed non-Italian.",
+    "same-tier ordinary rows may use a populated Library audio_it slot as a weak fallback when debug language data is noisy or missing.",
+    "TV reboot/remake disambiguation: same-title series with different populated year values must be separated at grouping time, before any duplicate-quality comparison begins.",
+    "Audio codec calibration guardrail: a more efficient lossy codec must not automatically beat a much higher-bitrate lossy track; this specifically prevents cases like DD+ 5.1 192 kbps outranking DD 5.1 640 kbps.",
+    "Audio comparison guardrails now extend symmetrically to Italian and English audio so that residual English-audio advantages cannot reintroduce the same codec-label bias."
+  ],
+  "implementation_requirements": {
+    "purpose": "Mandatory fields and precedence that the AI/code generator must implement from this JSON.",
+    "must_read_from_json": [
+      "policy_precedence",
+      "movie_duration_rules.movie.same_cut_if_difference_seconds_lt",
+      "movie_duration_rules.movie.different_cut_if_difference_seconds_gte",
+      "italian_audio_detection.output_state_model",
+      "italian_audio_detection.decision_use_rule",
+      "special_keeps",
+      "conditional_4k_low_bitrate_rule",
+      "primary_sort_order_for_technical_preference",
+      "keeper_selection",
+      "italian_vs_non_italian_override",
+      "row_classification_rules",
+      "group_classification_rules",
+      "output_contract",
+      "deterministic_thresholds.audio_broad_channel_tiers",
+      "deterministic_thresholds.audio_codec_classification",
+      "deterministic_thresholds.audio_cross_codec_guardrails",
+      "deterministic_thresholds.audio_lossless_lossy_guardrails",
+      "deterministic_thresholds.audio_unknown_codec_handling",
+      "audio_scoring_engineering_rationale"
+    ],
+    "must_not_do": [
+      "Ignore a rule section because it looks descriptive rather than algorithmic.",
+      "Replace general rules with title-specific memory.",
+      "Treat the reference report as a production shortcut for final actions."
+    ]
+  },
+  "reference_inference_summary": {
+    "different_cut_bias": [
+      "The reference workbook behaves as if movie runtime deltas around one minute already justify separate-cut handling in several groups.",
+      "Therefore 60 seconds is the right default split threshold for movies, not 180 seconds."
+    ],
+    "special_original_bias": [
+      "When one row is special/original (full_disc, DirtyHippie, AI-upscale) and another row is the obvious best technical keep for the same cut, prefer CONSERVA over MANUALE.",
+      "This remains true even when language metadata on the special/original row is missing or unknown."
+    ],
+    "manual_bias_scope": [
+      "MANUALE is concentrated on ordinary same-tier conflicts where video and Italian-audio advantages are split across rows.",
+      "MANUALE should not be triggered merely because a clearly lower-tier video copy has Italian audio, unless the rows are still in the same broad video tier."
+    ],
+    "library_vs_debug_audio_signal": [
+      "In same-tier ordinary conflicts, a populated Library audio_it slot may still matter when debug language metadata is noisy or incomplete.",
+      "In contrast, unknown-language full_disc rows should be treated as language-opaque rather than as confirmed non-Italian rows."
+    ],
+    "delete_proposed_bias": [
+      "ELIMINA_PROPOSTI is reserved for residual English-audio-only advantages after Italian audio and core video preference are already resolved."
+    ]
+  },
+  "known_reference_inconsistencies": [
+    "Some reference MANUALE cases appear to use Library audio_it presence even when Debug_Streams does not confirm Italian audio.",
+    "Some reference CONSERVA cases treat full_disc rows with missing or unknown language metadata as non-conflicting companions rather than as confirmed no-Italian rows.",
+    "Because the reference itself is not perfectly consistent, the policy should encode its dominant tendencies rather than overfit every single edge case."
+  ],
+  "policy_precedence": [
+    "identity_model",
+    "normalization",
+    "grouping",
+    "italian_audio_detection",
+    "movie_duration_rules",
+    "conditional_4k_low_bitrate_rule",
+    "special_keeps",
+    "primary_sort_order_for_technical_preference",
+    "keeper_selection",
+    "italian_vs_non_italian_override",
+    "row_classification_rules",
+    "group_classification_rules",
+    "output_contract"
+  ],
+  "reference_report_usage": {
+    "optional": true,
+    "purpose": "Use the supplied target report only as a calibration and validation reference for the general policy encoded here.",
+    "allowed_uses": [
+      "Infer dominant general tendencies that can be expressed without title-specific rules.",
+      "Validate that an implementation is close to the intended decision style.",
+      "Reuse wording patterns for human-readable reasons."
+    ],
+    "forbidden_uses": [
+      "Copy the report's title-specific outcomes into code.",
+      "Bypass classification by replaying report rows as final actions.",
+      "Infer hidden title whitelists or blacklists."
+    ]
+  },
+  "mandatory_decision_algorithm": [
+    "Build duplicate groups using grouping, and apply TV year disambiguation before any year-less TV fallback.",
+    "For each row, derive normalized_basename, source_tag, resolution_rank, hdr_rank, size_gib, bitrate_mbps_video, italian_audio_state, audio_it_score, audio_en_score, duration_seconds, and lowbit4k_penalized.",
+    "For movie groups, split rows into cut clusters using movie_duration_rules before comparing quality across rows.",
+    "Within each cut cluster, preserve all special/original rows that qualify under special_keeps unless they are explicitly dominated by lowbit4k_penalized logic.",
+    "Choose the best conventional technical row in each cut cluster using primary_sort_order_for_technical_preference.",
+    "If a special/original row exists and one technical row clearly serves as the best watch copy, keep both.",
+    "Apply Italian-vs-non-Italian override only when italian_audio_state yields a real yes-vs-no conflict within the same broad video tier.",
+    "Apply audio guardrails for lossless-vs-lossy and cross-codec bitrate gaps before declaring audio_it_better or audio_en_better.",
+    "For all remaining non-kept rows, assign DELETE_SAFE, DELETE_PROPOSED, or REVIEW_MANUAL according to row_classification_rules.",
+    "Emit KEEP for every retained row and the appropriate delete/manual action for every other row."
+  ],
+  "anti_cheat_rules": {
+    "forbidden": [
+      "Any rule that names a specific movie title, episode title, imdb_id, tmdb_id, group key, basename, or file path solely to force a desired outcome.",
+      "Any memorized whitelist/blacklist copied from the target report.",
+      "Any use of the report as a direct row-action lookup table in production."
+    ],
+    "allowed": [
+      "General source-tag rules.",
+      "General duration-based cut rules.",
+      "General language-state rules.",
+      "General video/audio/source trade-off rules."
+    ]
+  },
+  "audio_scoring_engineering_rationale": {
+    "purpose": "Document the engineering basis for the codec and channel scores so the policy remains reproducible and physically grounded.",
+    "important_scope_note": [
+      "These scores are policy priors for duplicate classification, not universal psychoacoustic truth.",
+      "The score bands are intentionally coarse and are constrained by explicit guardrails. Guardrails outrank raw score when they conflict."
+    ],
+    "score_band_rationale": {
+      "lossless_or_master_family": [
+        "TrueHD, DTS-HD MA, FLAC, LPCM/PCM preserve the master signal losslessly or decode to a master-equivalent PCM representation.",
+        "They are therefore grouped in a tight top band, with only small spacing for family/feature differences rather than large implied audible gaps."
+      ],
+      "immersive_lossless_extensions": [
+        "TrueHD Atmos and DTS:X sit slightly above their base lossless families because they carry immersive/object capability on top of high-end delivery formats.",
+        "The gap is intentionally small: immersive metadata is a delivery/capability advantage, not proof of better mastering."
+      ],
+      "lossy_multichannel_family": [
+        "DD, DD+, DTS, AAC, Opus, and MP3 are all lossy families, so they sit below the lossless band.",
+        "Within the lossy band, codec efficiency matters, but large bitrate deficits must still block false wins."
+      ],
+      "unknown_codec_default": [
+        "Unknown codecs receive a conservative default below known modern lossy codecs.",
+        "The policy prefers false-neutral over false-optimistic treatment for unknown labels."
+      ]
+    },
+    "per_codec_notes": {
+      "truehd_atmos": "Top score because it is a lossless Dolby delivery family with immersive object capability; only marginally above base TrueHD.",
+      "dts_x": "Very high score because DTS describes DTS:X as supporting lossless encoding in high-end delivery chains; kept slightly below TrueHD Atmos only as a stable policy tie-breaker, not as a claim of audible inferiority.",
+      "truehd": "Upper lossless band because Dolby TrueHD is a lossless multichannel codec with high peak rates.",
+      "dts_hd": "Upper lossless band because DTS-HD Master Audio is lossless and identical to the studio master.",
+      "flac_lpcm_pcm": "Upper lossless band because FLAC is lossless and LPCM/PCM is linear PCM without lossy coding; kept close to other lossless families.",
+      "dolby_digital_plus_atmos": "Upper lossy band because it combines an efficient lossy family with immersive delivery capability, but remains below lossless formats.",
+      "dolby_digital_plus_or_ddp": "Slightly above AC-3 because Dolby documents better delivery efficiency and wider channel support, but not enough to erase large bitrate deficits.",
+      "dts": "Placed above AC-3 because DTS Digital Surround supports higher legacy delivery rates, but below DD+ because it remains a legacy lossy family without the same streaming-efficiency rationale.",
+      "dolby_digital_atmos": "Slightly above plain AC-3 when immersive metadata is present, but still below DD+ and all lossless families.",
+      "dolby_digital_or_ac3": "Baseline legacy lossy multichannel score.",
+      "opus": "Modern efficient lossy codec kept close to AAC; the policy avoids claiming a large universal superiority gap because deployment context varies.",
+      "aac": "Modern efficient lossy codec for distribution and streaming; close to Opus and below legacy home-theater multichannel families in this library-oriented policy.",
+      "mp3": "Lower lossy prior because it is an older perceptual codec without the multichannel/home-cinema orientation of the families above."
+    },
+    "channel_bonus_rationale": {
+      "principle": "Channel bonuses are intentionally modest because more channels improve spatial information, not necessarily fidelity.",
+      "bonuses": {
+        "7.1": "Highest bonus because it materially expands the bed over 5.1.",
+        "6.1": "Intermediate bonus between 5.1 and 7.1.",
+        "5.1": "Meaningful surround bonus over stereo/matrix layouts.",
+        "4.0": "Small bonus over 2.0 because it adds surround information but is not equivalent to a modern 5.1 bed.",
+        "3.0": "Very small bonus over 2.0.",
+        "2.0": "Small bonus over mono.",
+        "1.0": "Reference floor."
+      }
+    },
+    "bitrate_term_rationale": [
+      "The bitrate term is logarithmic because bitrate helps, but with diminishing returns.",
+      "This prevents bitrate alone from overwhelming codec class, while still allowing large bitrate differences to matter."
+    ],
+    "guardrail_rationale": [
+      "Lossless-vs-lossy rules prevent impossible or weakly defensible wins within the same broad channel tier.",
+      "DD+ vs DD and general lossy-gap rules prevent the score from treating a much lower-bitrate track as superior purely because the codec label is newer or more efficient."
+    ]
+  }
 }

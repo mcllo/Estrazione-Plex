@@ -225,6 +225,50 @@ def test_full_disc_primary_also_keeps_best_conventional_technical(tmp_path: Path
     assert any("tech_best" in x for x in keeps)
 
 
+def test_full_disc_dirtyhippie_and_best_technical_are_all_kept(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/full_disc.m2ts", container="m2ts", rating_key="1", bitrate_mbps_video=11.5, audio_it_quality=""),
+        make_row(file="/dirtyhippie.mkv", rating_key="2", bitrate_mbps_video=6.2),
+        make_row(file="/best_technical.mkv", rating_key="3", bitrate_mbps_video=9.8, audio_it_quality="TrueHD 5.1", audio_it_bitrate_mbps=1.1),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    kept = all_df[all_df["final_action"] == "KEEP"]["file_path"].tolist()
+    assert set(kept) == {"/full_disc.m2ts", "/dirtyhippie.mkv", "/best_technical.mkv"}
+    assert (all_df["group_status"] == "CONSERVA").all()
+    assert "REVIEW_MANUAL" not in set(all_df["final_action"])
+
+
+def test_multiple_specials_without_full_disc_combo_still_limited(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/best_technical.mkv", rating_key="1", bitrate_mbps_video=9.9),
+        make_row(file="/dirtyhippie.mkv", rating_key="2", bitrate_mbps_video=5.1),
+        make_row(file="/ai_upscale_1.mkv", rating_key="3", bitrate_mbps_video=5.0),
+        make_row(file="/ai_upscale_2.mkv", rating_key="4", bitrate_mbps_video=4.9),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    assert (all_df["final_action"] == "KEEP").sum() <= 2
+
+
+def test_keep_selection_is_deterministic(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/full_disc.m2ts", container="m2ts", rating_key="1", bitrate_mbps_video=11.5, audio_it_quality=""),
+        make_row(file="/dirtyhippie.mkv", rating_key="2", bitrate_mbps_video=6.2),
+        make_row(file="/best_technical.mkv", rating_key="3", bitrate_mbps_video=9.8, audio_it_quality="TrueHD 5.1", audio_it_bitrate_mbps=1.1),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out1 = analyze_duplicates(p, tmp_path)
+    out2 = analyze_duplicates(p, tmp_path)
+    keeps1 = pd.read_excel(out1, sheet_name="Tutte_le_decisioni")
+    keeps2 = pd.read_excel(out2, sheet_name="Tutte_le_decisioni")
+    files1 = sorted(keeps1[keeps1["final_action"] == "KEEP"]["file_path"].tolist())
+    files2 = sorted(keeps2[keeps2["final_action"] == "KEEP"]["file_path"].tolist())
+    assert files1 == files2
+
+
 def test_actions_and_sheets(tmp_path: Path):
     df = pd.DataFrame([
         make_row(file="/best.mkv", rating_key="1", resolution="1080p", bitrate_mbps_video=8.0, audio_en_bitrate_mbps=0.4),

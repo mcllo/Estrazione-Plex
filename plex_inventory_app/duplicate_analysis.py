@@ -148,12 +148,53 @@ def _allowed_special_keepers(cluster: pd.DataFrame) -> set[int]:
     return keep
 
 
+def _rank_indices(cluster: pd.DataFrame, indices: set[int] | list[int]) -> list[int]:
+    return [
+        idx for idx, _score in sorted(
+            [(idx, candidate_score(cluster.loc[idx])) for idx in indices],
+            key=lambda item: candidate_sort_key(item[1]),
+        )
+    ]
+
+
 def _best_technical_keeper(cluster: pd.DataFrame) -> int | None:
     technical = cluster[(~cluster["source_tag"].isin(["full_disc", "dirtyhippie", "ai_upscale"])) & (~cluster["lowbit4k_penalized"])]
     if technical.empty:
         return None
     ranked = sorted([(idx, candidate_score(row)) for idx, row in technical.iterrows()], key=lambda x: candidate_sort_key(x[1]))
     return ranked[0][0]
+
+
+def _choose_keep_indices(cluster: pd.DataFrame, keeper: pd.Series) -> set[int]:
+    keep_indices: set[int] = {keeper.name}
+    special_keepers = _allowed_special_keepers(cluster)
+    best_technical = _best_technical_keeper(cluster)
+    special_tags = {"full_disc", "dirtyhippie", "ai_upscale"}
+    non_lowbit = cluster[~cluster["lowbit4k_penalized"]]
+    full_disc_indices = set(non_lowbit[non_lowbit["source_tag"] == "full_disc"].index.tolist())
+    dirty_ai_indices = set(non_lowbit[non_lowbit["source_tag"].isin(["dirtyhippie", "ai_upscale"])].index.tolist())
+
+    if full_disc_indices and dirty_ai_indices and best_technical is not None:
+        best_full_disc = _rank_indices(cluster, full_disc_indices)[0]
+        best_dirty_ai = _rank_indices(cluster, dirty_ai_indices)[0]
+        return {best_full_disc, best_dirty_ai, best_technical}
+
+    if special_keepers:
+        keep_indices.add(_rank_indices(cluster, special_keepers)[0])
+        if best_technical is not None:
+            keep_indices.add(best_technical)
+    if len(keep_indices) > 2:
+        specials = [idx for idx in keep_indices if str(cluster.loc[idx, "source_tag"]) in special_tags]
+        technicals = [idx for idx in keep_indices if idx not in specials]
+        ranked_specials = _rank_indices(cluster, specials) if specials else []
+        ranked_technicals = _rank_indices(cluster, technicals) if technicals else []
+        if ranked_specials and ranked_technicals:
+            keep_indices = {ranked_specials[0], ranked_technicals[0]}
+        elif len(ranked_specials) >= 2 and "full_disc" in {str(cluster.loc[idx, "source_tag"]) for idx in ranked_specials[:2]}:
+            keep_indices = set(ranked_specials[:2])
+        else:
+            keep_indices = set((_rank_indices(cluster, keep_indices))[:2])
+    return keep_indices
 
 
 def analyze_duplicates(
@@ -269,20 +310,7 @@ def analyze_duplicates(
         cluster = cluster.copy()
         cluster["lowbit4k_penalized"] = cluster.apply(lambda r: lowbit4k_penalty(str(r.get("type", "")).lower()=="movie", int(r["resolution_rank"]), float(r.get("bitrate_mbps_video") or 0), bool(has_good_1080)), axis=1)
         keeper = choose_primary_keeper(cluster)
-        special_keepers = _allowed_special_keepers(cluster)
-        best_technical = _best_technical_keeper(cluster)
-        keep_indices = {keeper.name}
-        if special_keepers:
-            keep_indices.update(special_keepers)
-            if best_technical is not None and best_technical not in special_keepers:
-                keep_indices.add(best_technical)
-        non_special_keeps = [idx for idx in keep_indices if str(cluster.loc[idx, "source_tag"]) not in {"full_disc", "dirtyhippie", "ai_upscale"}]
-        if len(non_special_keeps) > 1:
-            keep_indices -= set(non_special_keeps[1:])
-        if len(keep_indices) > 2:
-            special_idxs = [idx for idx in keep_indices if str(cluster.loc[idx, "source_tag"]) in {"full_disc", "dirtyhippie", "ai_upscale"}]
-            non_special_idx = next((idx for idx in keep_indices if idx not in special_idxs), None)
-            keep_indices = set(special_idxs[:2] if non_special_idx is None else special_idxs[:1] + [non_special_idx])
+        keep_indices = _choose_keep_indices(cluster, keeper)
         for _, row in cluster.iterrows():
             action = "KEEP" if row.name in keep_indices else "DELETE_SAFE"
             reason = ["versione tenuta con le regole attuali"] if action == "KEEP" else ["differenze contenute: copia ridondante"]
@@ -309,10 +337,6 @@ def analyze_duplicates(
                     reason = ["vantaggi incrociati: video vs audio/sorgente", "audio IT migliore sul file da valutare"]
                 row_en = parse_audio_quality(row.get("audio_en_quality"), row.get("audio_en_bitrate_mbps"))
                 keep_en = parse_audio_quality(keeper.get("audio_en_quality"), keeper.get("audio_en_bitrate_mbps"))
-                special_or_best_combo = bool(special_keepers) and keeper.name not in special_keepers
-                if special_or_best_combo and row.name in special_keepers:
-                    action = "KEEP"
-                    reason = ["versione tenuta con le regole attuali"]
                 if action == "DELETE_SAFE" and audio_better(row_en, keep_en, "en") and not audio_better(row_it, keep_it, "it") and same_tier:
                     action = "DELETE_PROPOSED"
                     reason = ["vantaggio residuo audio EN sul file da valutare", "resta un vantaggio secondario audio EN"]

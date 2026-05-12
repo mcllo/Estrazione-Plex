@@ -652,7 +652,12 @@ class MainWindow(QMainWindow):
 
     def _libraries_failed(self, tb: str) -> None:
         self.library_list.clear()
-        message = tb.splitlines()[-1] if tb.splitlines() else tb
+        lines = tb.splitlines()
+        idx = next((i for i, line in enumerate(lines) if "Tentativi effettuati:" in line), None)
+        if idx is not None:
+            message = "\n".join(lines[idx:][-12:])
+        else:
+            message = lines[-1] if lines else tb
         QMessageBox.warning(self, "Librerie", f"Impossibile caricare le librerie.\n{message}")
 
     @Slot(str)

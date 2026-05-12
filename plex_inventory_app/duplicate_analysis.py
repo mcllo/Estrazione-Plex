@@ -430,12 +430,3 @@ def analyze_duplicates(
     log(f"Report scritto: {out_path}")
     progress(total_units, total_units, "Report duplicati completato")
     return out_path
-    unknown_tokens = {"unknown", "und", "undefined", "none", "null", "empty"}
-    def _safe_float_local(value: object) -> float:
-        try:
-            if value is None:
-                return 0.0
-            parsed = float(value)
-            return 0.0 if pd.isna(parsed) else parsed
-        except (TypeError, ValueError):
-            return 0.0

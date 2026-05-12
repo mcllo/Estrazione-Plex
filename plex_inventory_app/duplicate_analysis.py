@@ -71,11 +71,19 @@ def movie_group_key(row: pd.Series) -> str:
 
 
 def _episode_component(value: object) -> str:
-    text = str(value or "").strip()
-    if not text:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
-    if text.isdigit():
-        return f"{int(text):02d}"
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return ""
+    try:
+        num = float(text)
+        if pd.isna(num):
+            return ""
+        if num.is_integer():
+            return f"{int(num):02d}"
+    except (TypeError, ValueError):
+        pass
     return text
 
 
@@ -96,6 +104,15 @@ def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.D
     file_path = str(row.get("file") or "")
     pos = {"italian", "italiano", "ita", "it"}
     neg = {"latino", "latin", "castilian", "spanish", "espanol", "spa"}
+    unknown_tokens = {"unknown", "und", "undefined", "none", "null", "empty"}
+    def _safe_float_local(value: object) -> float:
+        try:
+            if value is None:
+                return 0.0
+            parsed = float(value)
+            return 0.0 if pd.isna(parsed) else parsed
+        except (TypeError, ValueError):
+            return 0.0
     def _row_tokens(s: pd.Series, cols: list[str]) -> set[str]:
         text = " ".join(str(s.get(c, "")) for c in cols).lower()
         return set(re.findall(r"[a-z]+", text))
@@ -119,6 +136,8 @@ def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.D
             tokens = _row_tokens(s, scan_cols)
             if tokens & pos and not (tokens & neg):
                 return "yes"
+            if tokens and tokens.issubset(unknown_tokens):
+                continue
             if tokens and not (tokens & pos):
                 has_non_it = True
         return "no" if has_non_it else "unknown"
@@ -143,7 +162,7 @@ def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.D
     for src in (_scan_streams(ds), _scan_xml(dx)):
         if src is not None:
             return src
-    if float(row.get("audio_it_bitrate_mbps") or 0) > 0 or str(row.get("audio_it_quality") or "").strip():
+    if _safe_float_local(row.get("audio_it_bitrate_mbps")) > 0 or str(row.get("audio_it_quality") or "").strip():
         return "yes"
     if source_tag_from_path(file_path, str(row.get("container") or "")) == "full_disc":
         return "unknown"
@@ -411,3 +430,12 @@ def analyze_duplicates(
     log(f"Report scritto: {out_path}")
     progress(total_units, total_units, "Report duplicati completato")
     return out_path
+    unknown_tokens = {"unknown", "und", "undefined", "none", "null", "empty"}
+    def _safe_float_local(value: object) -> float:
+        try:
+            if value is None:
+                return 0.0
+            parsed = float(value)
+            return 0.0 if pd.isna(parsed) else parsed
+        except (TypeError, ValueError):
+            return 0.0

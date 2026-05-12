@@ -203,10 +203,14 @@ def test_candidate_score_handles_nan_values():
 
 def test_tv_group_key_normalizes_season_episode():
     r1 = pd.Series(make_row(type="episode", season=1, episode=2, year=2020))
-    r2 = pd.Series(make_row(type="episode", season="01", episode="02", year=2020))
-    r3 = pd.Series(make_row(type="episode", season="01", episode="02", year=2021))
+    r2 = pd.Series(make_row(type="episode", season=1.0, episode=2.0, year=2020))
+    r3 = pd.Series(make_row(type="episode", season="01", episode="02", year=2020))
+    r4 = pd.Series(make_row(type="episode", season="01", episode="02", year=2021))
     assert tv_group_key(r1) == tv_group_key(r2)
-    assert tv_group_key(r1) != tv_group_key(r3)
+    assert tv_group_key(r2) == tv_group_key(r3)
+    assert tv_group_key(r1) != tv_group_key(r4)
+    r_nan = pd.Series(make_row(type="episode", season=float("nan"), episode=float("nan"), year=2020))
+    assert "nan" not in tv_group_key(r_nan)
 
 
 def test_detect_italian_audio_state_streams_and_fallbacks():
@@ -218,6 +222,20 @@ def test_detect_italian_audio_state_streams_and_fallbacks():
     assert detect_italian_audio_state(row, None, None) == "unknown"
     row_lib = pd.Series(make_row(rating_key="2", audio_it_bitrate_mbps=0.2, audio_it_quality=""))
     assert detect_italian_audio_state(row_lib, None, None) == "yes"
+    row_dirty = pd.Series(make_row(rating_key="3", audio_it_bitrate_mbps="n/a", audio_it_quality=""))
+    assert detect_italian_audio_state(row_dirty, None, None) == "unknown"
+
+
+def test_detect_italian_audio_state_handles_unknown_tokens():
+    row = pd.Series(make_row(rating_key="1", file="/full_disc.m2ts", container="m2ts", audio_it_quality="", audio_it_bitrate_mbps=0))
+    ds_und = pd.DataFrame([{"rating_key": "1", "streamType": 2, "language": "und"}])
+    ds_unknown = pd.DataFrame([{"rating_key": "1", "streamType": 2, "language": "unknown"}])
+    ds_eng = pd.DataFrame([{"rating_key": "1", "streamType": 2, "language": "eng"}])
+    ds_ita = pd.DataFrame([{"rating_key": "1", "streamType": 2, "language": "ita"}])
+    assert detect_italian_audio_state(row, ds_und, None) == "unknown"
+    assert detect_italian_audio_state(row, ds_unknown, None) == "unknown"
+    assert detect_italian_audio_state(row, ds_eng, None) == "no"
+    assert detect_italian_audio_state(row, ds_ita, None) == "yes"
 
 
 def test_candidate_sort_key_handles_missing_audio_score():

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -121,7 +121,7 @@ def list_libraries(
     log(f"Server richiesto: {server_name}")
     plex = _connect_main(token, server_name, log_callback=log_callback)
     log("Connessione riuscita, leggo sezioni libreria...")
-    sections = _call_with_timeout(lambda: plex.library.sections(), timeout_s=15)
+    sections = plex.library.sections()
     log(f"Sezioni trovate: {len(sections)}")
 
     out: list[dict[str, str]] = []
@@ -133,10 +133,15 @@ def list_libraries(
     return out
 
 
-def _call_with_timeout(fn: Callable[[], object], timeout_s: int):
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(fn)
-        return fut.result(timeout=timeout_s)
+def _validate_plex_sections(base_url: str, token: str, session: requests.Session, timeout_s: int = 12) -> None:
+    url = base_url.rstrip("/") + "/library/sections"
+    response = session.get(
+        url,
+        params={"X-Plex-Token": token},
+        timeout=(3, timeout_s),
+        verify=False,
+    )
+    response.raise_for_status()
 
 
 def _decoded_plex_direct_candidates(uri: str) -> list[str]:
@@ -210,12 +215,9 @@ def _connect_to_resource(token: str, server_name: str, log_callback: LogCallback
     log("Tentativo connessione legacy via resource.connect(timeout=12)")
     try:
         plex = resource.connect(timeout=12)
-        _call_with_timeout(lambda: plex.library.sections(), timeout_s=15)
+        plex.library.sections()
         log("Connessione legacy riuscita")
         return resource, plex
-    except FuturesTimeoutError:
-        attempts.append(("resource.connect(timeout=12)", "TimeoutError"))
-        log("Connessione legacy fallita: TimeoutError")
     except Exception as exc:
         attempts.append(("resource.connect(timeout=12)", type(exc).__name__))
         log(f"Connessione legacy fallita: {type(exc).__name__}")
@@ -273,14 +275,11 @@ def _connect_to_resource(token: str, server_name: str, log_callback: LogCallback
         for candidate_token in token_candidates:
             try:
                 plex = PlexServer(base_url, candidate_token, timeout=12, session=session)
-                _call_with_timeout(lambda: plex.library.sections(), timeout_s=15)
+                _validate_plex_sections(base_url, candidate_token, session=session, timeout_s=12)
                 if is_private_candidate:
                     private_success = True
                 log(f"Connessione riuscita su URI: {base_url}")
                 return resource, plex
-            except FuturesTimeoutError:
-                attempts.append((base_url, "TimeoutError"))
-                log(f"Tentativo fallito: {base_url} local={local} relay={relay} private={is_private_candidate}: TimeoutError")
             except Exception as exc:
                 attempts.append((base_url, type(exc).__name__))
                 log(f"Tentativo fallito: {base_url} local={local} relay={relay} private={is_private_candidate}: {type(exc).__name__}")

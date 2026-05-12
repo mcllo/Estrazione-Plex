@@ -114,7 +114,7 @@ def _safe_score_tuple(value: object) -> tuple[float, float, float, float]:
 
 def audio_codec_family(quality: object) -> Literal["lossless_or_master", "lossy", "unknown"]:
     q = _safe_text(quality).lower()
-    if any(x in q for x in ["truehd", "dts-hd", "flac", "pcm", "master", "ma"]):
+    if any(x in q for x in ["truehd", "dts-hd", "flac", "pcm", "master", "ma", "dts:x", "dts-x", "dts x"]):
         return "lossless_or_master"
     if any(x in q for x in ["dd", "dd+", "eac3", "ac3", "aac", "dts"]):
         return "lossy"
@@ -197,10 +197,6 @@ def audio_better(candidate: AudioScore, reference: AudioScore, language: str = "
         return True
     if candidate.channels == reference.channels and candidate.codec_key == "ddp" and reference.codec_key == "dd" and (candidate.bitrate * 2.0) <= reference.bitrate:
         return False
-    # DD+ vs DD guardrail on same channels
-    if candidate.channels == reference.channels:
-        if candidate.codec_family == reference.codec_family == "lossy":
-            return candidate.bitrate > reference.bitrate
     # lossless guardrails
     if candidate.codec_family == "lossless_or_master" and reference.codec_family == "lossy":
         return _tier_num(candidate.broad_tier) + 1 >= _tier_num(reference.broad_tier)

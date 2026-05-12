@@ -15,6 +15,7 @@ from plex_inventory_app.duplicate_policy_v12 import (
     normalize_text,
     candidate_score,
     candidate_sort_key,
+    audio_codec_family,
 )
 
 
@@ -113,6 +114,14 @@ def test_lossy_does_not_beat_lossless_same_broad_tier():
     assert not audio_better(parse_audio_quality("DD+ 5.1", 1.6), parse_audio_quality("TrueHD 5.1", 1.0), "it")
 
 
+def test_dd_plus_can_beat_dd_when_guardrail_cleared_and_score_delta_high():
+    assert audio_better(parse_audio_quality("DD+ 7.1", 1.6), parse_audio_quality("DD 7.1", 0.7), "it")
+
+
+def test_dtsx_is_classified_as_lossless_or_master():
+    assert audio_codec_family("DTS:X 7.1") == "lossless_or_master"
+
+
 def test_candidate_sort_key_prefers_video_then_it_audio_then_source_then_en():
     row1 = pd.Series(make_row(file="/a.mkv", bitrate_mbps_video=8.0))
     row2 = pd.Series(make_row(file="/b.mkv", bitrate_mbps_video=7.0))
@@ -200,6 +209,20 @@ def test_special_keep_not_more_than_two_in_ordinary_case(tmp_path: Path):
     out = analyze_duplicates(p, tmp_path)
     all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
     assert (all_df["final_action"] == "KEEP").sum() <= 2
+
+
+def test_full_disc_primary_also_keeps_best_conventional_technical(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/full_disc_best.m2ts", container="m2ts", rating_key="1", bitrate_mbps_video=12.0, audio_it_quality=""),
+        make_row(file="/tech_best.mkv", rating_key="2", bitrate_mbps_video=9.5, audio_it_quality="TrueHD 5.1", audio_it_bitrate_mbps=1.2),
+        make_row(file="/tech_worse.mkv", rating_key="3", bitrate_mbps_video=7.0),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    keeps = all_df[all_df["final_action"] == "KEEP"]["file_path"].tolist()
+    assert any("full_disc_best" in x for x in keeps)
+    assert any("tech_best" in x for x in keeps)
 
 
 def test_actions_and_sheets(tmp_path: Path):

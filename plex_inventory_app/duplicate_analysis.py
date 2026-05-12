@@ -148,6 +148,14 @@ def _allowed_special_keepers(cluster: pd.DataFrame) -> set[int]:
     return keep
 
 
+def _best_technical_keeper(cluster: pd.DataFrame) -> int | None:
+    technical = cluster[(~cluster["source_tag"].isin(["full_disc", "dirtyhippie", "ai_upscale"])) & (~cluster["lowbit4k_penalized"])]
+    if technical.empty:
+        return None
+    ranked = sorted([(idx, candidate_score(row)) for idx, row in technical.iterrows()], key=lambda x: candidate_sort_key(x[1]))
+    return ranked[0][0]
+
+
 def analyze_duplicates(
     inventory_path: Path,
     output_dir: Path,
@@ -262,8 +270,21 @@ def analyze_duplicates(
         cluster["lowbit4k_penalized"] = cluster.apply(lambda r: lowbit4k_penalty(str(r.get("type", "")).lower()=="movie", int(r["resolution_rank"]), float(r.get("bitrate_mbps_video") or 0), bool(has_good_1080)), axis=1)
         keeper = choose_primary_keeper(cluster)
         special_keepers = _allowed_special_keepers(cluster)
+        best_technical = _best_technical_keeper(cluster)
+        keep_indices = {keeper.name}
+        if special_keepers:
+            keep_indices.update(special_keepers)
+            if best_technical is not None and best_technical not in special_keepers:
+                keep_indices.add(best_technical)
+        non_special_keeps = [idx for idx in keep_indices if str(cluster.loc[idx, "source_tag"]) not in {"full_disc", "dirtyhippie", "ai_upscale"}]
+        if len(non_special_keeps) > 1:
+            keep_indices -= set(non_special_keeps[1:])
+        if len(keep_indices) > 2:
+            special_idxs = [idx for idx in keep_indices if str(cluster.loc[idx, "source_tag"]) in {"full_disc", "dirtyhippie", "ai_upscale"}]
+            non_special_idx = next((idx for idx in keep_indices if idx not in special_idxs), None)
+            keep_indices = set(special_idxs[:2] if non_special_idx is None else special_idxs[:1] + [non_special_idx])
         for _, row in cluster.iterrows():
-            action = "KEEP" if row.name == keeper.name or row.name in special_keepers else "DELETE_SAFE"
+            action = "KEEP" if row.name in keep_indices else "DELETE_SAFE"
             reason = ["versione tenuta con le regole attuali"] if action == "KEEP" else ["differenze contenute: copia ridondante"]
             if action != "KEEP":
                 row_video = float(row.get("bitrate_mbps_video") or 0)

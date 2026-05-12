@@ -10,6 +10,7 @@ import pandas as pd
 from .duplicate_policy_v12 import (
     POLICY_VERSION, audio_better, audio_score, basename, hdr_rank, lowbit4k_penalty,
     normalize_text, normalized_basename, parse_audio_quality, resolution_rank, source_tag_from_path, SOURCE_RANK,
+    candidate_score, candidate_sort_key,
 )
 from .duplicate_report_writer import write_duplicate_report
 
@@ -69,10 +70,27 @@ def movie_group_key(row: pd.Series) -> str:
     return f"movie:titleyear:{normalize_text(row.get('title_or_series'))}:{str(row.get('year') or '').strip()}"
 
 
+def _episode_component(value: object) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return ""
+    try:
+        num = float(text)
+        if pd.isna(num):
+            return ""
+        if num.is_integer():
+            return f"{int(num):02d}"
+    except (TypeError, ValueError):
+        pass
+    return text
+
+
 def tv_group_key(row: pd.Series) -> str:
     title = normalize_text(row.get("title_or_series"))
-    season = str(row.get("season") or "")
-    episode = str(row.get("episode") or "")
+    season = _episode_component(row.get("season"))
+    episode = _episode_component(row.get("episode"))
     year = str(row.get("year") or "").strip()
     return f"tv:{title}:{year}:s{season}:e{episode}" if year else f"tv:{title}:s{season}:e{episode}"
 
@@ -84,7 +102,21 @@ def build_group_key(row: pd.Series) -> str:
 def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.DataFrame | None) -> str:
     rk = str(row.get("rating_key") or "")
     file_path = str(row.get("file") or "")
-    def _scan(df: pd.DataFrame | None) -> str | None:
+    pos = {"italian", "italiano", "ita", "it"}
+    neg = {"latino", "latin", "castilian", "spanish", "espanol", "spa"}
+    unknown_tokens = {"unknown", "und", "undefined", "none", "null", "empty"}
+    def _safe_float_local(value: object) -> float:
+        try:
+            if value is None:
+                return 0.0
+            parsed = float(value)
+            return 0.0 if pd.isna(parsed) else parsed
+        except (TypeError, ValueError):
+            return 0.0
+    def _row_tokens(s: pd.Series, cols: list[str]) -> set[str]:
+        text = " ".join(str(s.get(c, "")) for c in cols).lower()
+        return set(re.findall(r"[a-z]+", text))
+    def _scan_streams(df: pd.DataFrame | None) -> str | None:
         if df is None:
             return None
         cols = {c.lower(): c for c in df.columns}
@@ -93,20 +125,44 @@ def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.D
             matches = df[df[cols["rating_key"]].astype(str) == rk]
         if matches.empty:
             return None
-        text = " ".join(matches.astype(str).fillna("").agg(" ".join, axis=1).tolist()).lower()
-        tokens = set(re.findall(r"[a-z]+", text))
-        positive_tokens = {"italian", "italiano", "ita", "it"}
-        negative_tokens = {"latino", "latin", "american", "spanish", "espanol", "spa", "castilian"}
-        if tokens & positive_tokens and not (tokens & negative_tokens):
-            return "yes"
-        if any(x in text for x in ["audio", "language", "lang"]):
+        type_col = next((cols[k] for k in ["streamtype", "st_streamtype", "stream_type"] if k in cols), None)
+        if type_col:
+            matches = matches[matches[type_col].astype(str).str.lower().isin(["2", "audio"])]
+        if matches.empty:
+            return "unknown"
+        scan_cols = [c for c in matches.columns if c.lower() in {"lang", "language", "languagetag", "languagecode", "title", "displaytitle", "extendeddisplaytitle", "st_language", "st_languagetag", "st_languagecode", "st_title", "st_displaytitle", "st_extendeddisplaytitle"}]
+        has_non_it = False
+        for _, s in matches.iterrows():
+            tokens = _row_tokens(s, scan_cols)
+            if tokens & pos and not (tokens & neg):
+                return "yes"
+            if tokens and tokens.issubset(unknown_tokens):
+                continue
+            if tokens and not (tokens & pos):
+                has_non_it = True
+        return "no" if has_non_it else "unknown"
+    def _scan_xml(df: pd.DataFrame | None) -> str | None:
+        if df is None:
+            return None
+        cols = {c.lower(): c for c in df.columns}
+        matches = df
+        if "rating_key" in cols:
+            matches = df[df[cols["rating_key"]].astype(str) == rk]
+        if matches.empty:
+            return None
+        scan_cols = [c for c in matches.columns if c.lower() in {"dbg_audio_it_language", "dbg_audio_it_languagecode", "dbg_audio_it_title", "dbg_audio_it_displaytitle", "dbg_audio_it_extendeddisplaytitle", "dbg_audio_streams"}]
+        for _, s in matches.iterrows():
+            tokens = _row_tokens(s, scan_cols)
+            if tokens & pos and not (tokens & neg):
+                return "yes"
+        text = " ".join(matches[scan_cols].astype(str).fillna("").agg(" ".join, axis=1).tolist()).lower() if scan_cols else ""
+        if any(x in text for x in ["english", "eng", "french", "fre", "spa", "spanish"]):
             return "no"
-        return None
-    for src in (_scan(ds), _scan(dx)):
-        if src:
+        return "unknown"
+    for src in (_scan_streams(ds), _scan_xml(dx)):
+        if src is not None:
             return src
-    q = str(row.get("audio_it_quality") or "").strip().lower()
-    if q:
+    if _safe_float_local(row.get("audio_it_bitrate_mbps")) > 0 or str(row.get("audio_it_quality") or "").strip():
         return "yes"
     if source_tag_from_path(file_path, str(row.get("container") or "")) == "full_disc":
         return "unknown"
@@ -124,6 +180,78 @@ def _duration_cluster_movie(group: pd.DataFrame) -> pd.Series:
         cluster[i] = idx
         prev = sec
     return pd.Series(cluster)
+
+
+def choose_primary_keeper(cluster: pd.DataFrame) -> pd.Series:
+    scored = sorted([(idx, candidate_score(row)) for idx, row in cluster.iterrows()], key=lambda x: candidate_sort_key(x[1]))
+    return cluster.loc[scored[0][0]]
+
+
+def _allowed_special_keepers(cluster: pd.DataFrame) -> set[int]:
+    eligible = cluster[cluster["source_tag"].isin(["full_disc", "dirtyhippie", "ai_upscale"]) & (~cluster["lowbit4k_penalized"])]
+    if eligible.empty:
+        return set()
+    ranked = sorted([(idx, candidate_score(row)) for idx, row in eligible.iterrows()], key=lambda x: candidate_sort_key(x[1]))
+    best_idx = ranked[0][0]
+    keep = {best_idx}
+    tags = set(eligible["source_tag"].tolist())
+    if "full_disc" in tags and ({"dirtyhippie", "ai_upscale"} & tags):
+        for idx, _ in ranked:
+            if idx != best_idx and str(cluster.loc[idx, "source_tag"]) in {"full_disc", "dirtyhippie", "ai_upscale"}:
+                keep.add(idx)
+                break
+    return keep
+
+
+def _rank_indices(cluster: pd.DataFrame, indices: set[int] | list[int]) -> list[int]:
+    return [
+        idx for idx, _score in sorted(
+            [(idx, candidate_score(cluster.loc[idx])) for idx in indices],
+            key=lambda item: candidate_sort_key(item[1]),
+        )
+    ]
+
+
+def _best_technical_keeper(cluster: pd.DataFrame) -> int | None:
+    technical = cluster[(~cluster["source_tag"].isin(["full_disc", "dirtyhippie", "ai_upscale"])) & (~cluster["lowbit4k_penalized"])]
+    if technical.empty:
+        return None
+    ranked = sorted([(idx, candidate_score(row)) for idx, row in technical.iterrows()], key=lambda x: candidate_sort_key(x[1]))
+    return ranked[0][0]
+
+
+def _choose_keep_indices(cluster: pd.DataFrame, keeper: pd.Series) -> set[int]:
+    # App extension: when full_disc, DirtyHippie/AI-upscale and best technical coexist,
+    # keep all three as CONSERVA. This is general and not title-specific.
+    keep_indices: set[int] = {keeper.name}
+    special_keepers = _allowed_special_keepers(cluster)
+    best_technical = _best_technical_keeper(cluster)
+    special_tags = {"full_disc", "dirtyhippie", "ai_upscale"}
+    non_lowbit = cluster[~cluster["lowbit4k_penalized"]]
+    full_disc_indices = set(non_lowbit[non_lowbit["source_tag"] == "full_disc"].index.tolist())
+    dirty_ai_indices = set(non_lowbit[non_lowbit["source_tag"].isin(["dirtyhippie", "ai_upscale"])].index.tolist())
+
+    if full_disc_indices and dirty_ai_indices and best_technical is not None:
+        best_full_disc = _rank_indices(cluster, full_disc_indices)[0]
+        best_dirty_ai = _rank_indices(cluster, dirty_ai_indices)[0]
+        return {best_full_disc, best_dirty_ai, best_technical}
+
+    if special_keepers:
+        keep_indices.add(_rank_indices(cluster, special_keepers)[0])
+        if best_technical is not None:
+            keep_indices.add(best_technical)
+    if len(keep_indices) > 2:
+        specials = [idx for idx in keep_indices if str(cluster.loc[idx, "source_tag"]) in special_tags]
+        technicals = [idx for idx in keep_indices if idx not in specials]
+        ranked_specials = _rank_indices(cluster, specials) if specials else []
+        ranked_technicals = _rank_indices(cluster, technicals) if technicals else []
+        if ranked_specials and ranked_technicals:
+            keep_indices = {ranked_specials[0], ranked_technicals[0]}
+        elif len(ranked_specials) >= 2 and "full_disc" in {str(cluster.loc[idx, "source_tag"]) for idx in ranked_specials[:2]}:
+            keep_indices = set(ranked_specials[:2])
+        else:
+            keep_indices = set((_rank_indices(cluster, keep_indices))[:2])
+    return keep_indices
 
 
 def analyze_duplicates(
@@ -235,18 +363,19 @@ def analyze_duplicates(
             log(f"Classificazione gruppi: {processed}/{total_clusters}")
             progress(done_units, total_units, "Classificazione gruppi duplicati")
         dup_groups += 1
-        has_good_1080 = ((cluster["resolution_rank"] == 3) & (cluster["bitrate_mbps_video"].fillna(0) > 1.5)).any()
+        has_good_1080 = ((cluster["resolution_rank"] == 1080) & (cluster["bitrate_mbps_video"].fillna(0) > 1.5)).any()
         cluster = cluster.copy()
         cluster["lowbit4k_penalized"] = cluster.apply(lambda r: lowbit4k_penalty(str(r.get("type", "")).lower()=="movie", int(r["resolution_rank"]), float(r.get("bitrate_mbps_video") or 0), bool(has_good_1080)), axis=1)
-        ordered = cluster.sort_values(by=["lowbit4k_penalized","bitrate_mbps_video","resolution_rank","hdr_rank","audio_it_score","source_rank","audio_en_score","size_gib","normalized_basename"], ascending=[True,False,False,False,False,False,False,False,True])
-        keeper = ordered.iloc[0]
-        special_mask = cluster["source_tag"].isin(["full_disc","dirtyhippie","ai_upscale"])
+        keeper = choose_primary_keeper(cluster)
+        keep_indices = _choose_keep_indices(cluster, keeper)
         for _, row in cluster.iterrows():
-            action = "KEEP" if row.name == keeper.name or bool(special_mask.loc[row.name]) else "DELETE_SAFE"
+            action = "KEEP" if row.name in keep_indices else "DELETE_SAFE"
             reason = ["versione tenuta con le regole attuali"] if action == "KEEP" else ["differenze contenute: copia ridondante"]
             if action != "KEEP":
-                if float(row.get("bitrate_mbps_video") or 0) < float(keeper.get("bitrate_mbps_video") or 0):
-                    reason.append(f"bitrate video inferiore ({float(row.get('bitrate_mbps_video') or 0):.2f} < {float(keeper.get('bitrate_mbps_video') or 0):.2f} Mbps)")
+                row_video = float(row.get("bitrate_mbps_video") or 0)
+                keeper_video = float(keeper.get("bitrate_mbps_video") or 0)
+                if row_video < keeper_video:
+                    reason.append(f"bitrate video inferiore ({row_video:.3f} < {keeper_video:.3f} Mbps)")
                 if int(row.get("resolution_rank") or 0) < int(keeper.get("resolution_rank") or 0):
                     reason.append(f"risoluzione inferiore: {row.get('resolution')} vs {keeper.get('resolution')}")
                 if int(row.get("hdr_rank") or 0) < int(keeper.get("hdr_rank") or 0):
@@ -255,12 +384,17 @@ def analyze_duplicates(
                     reason.append(f"sorgente diversa ({row.get('source_tag')} vs {keeper.get('source_tag')})")
                 row_it = parse_audio_quality(row.get("audio_it_quality"), row.get("audio_it_bitrate_mbps"))
                 keep_it = parse_audio_quality(keeper.get("audio_it_quality"), keeper.get("audio_it_bitrate_mbps"))
-                if audio_better(row_it, keep_it, "it") and abs(float(row.get("bitrate_mbps_video") or 0) - float(keeper.get("bitrate_mbps_video") or 0)) < 0.8:
+                same_tier = int(row.get("resolution_rank") or 0) == int(keeper.get("resolution_rank") or 0) and int(row.get("hdr_rank") or 0) == int(keeper.get("hdr_rank") or 0)
+                italian_state = str(row.get("italian_audio_state") or "unknown")
+                if audio_better(row_it, keep_it, "it") and same_tier:
                     action = "REVIEW_MANUAL"
-                    reason = ["vantaggi incrociati: video vs audio/sorgente", "audio IT migliore sul file da valutare (...)"]
+                    reason = ["vantaggi incrociati: video vs audio/sorgente", "audio IT migliore sul file da valutare"]
+                if italian_state == "yes" and str(keeper.get("italian_audio_state") or "unknown") == "no" and same_tier:
+                    action = "REVIEW_MANUAL"
+                    reason = ["vantaggi incrociati: video vs audio/sorgente", "audio IT migliore sul file da valutare"]
                 row_en = parse_audio_quality(row.get("audio_en_quality"), row.get("audio_en_bitrate_mbps"))
                 keep_en = parse_audio_quality(keeper.get("audio_en_quality"), keeper.get("audio_en_bitrate_mbps"))
-                if action == "DELETE_SAFE" and audio_better(row_en, keep_en, "en") and not audio_better(row_it, keep_it, "it"):
+                if action == "DELETE_SAFE" and audio_better(row_en, keep_en, "en") and not audio_better(row_it, keep_it, "it") and same_tier:
                     action = "DELETE_PROPOSED"
                     reason = ["vantaggio residuo audio EN sul file da valutare", "resta un vantaggio secondario audio EN"]
             rows.append({**row.to_dict(), "title_or_episode": row.get("episode_title") or row.get("title_or_series"), "file_path": row.get("file"), "keep_reference": keeper.get("file"), "final_action": action, "reason": " ; ".join(reason)})

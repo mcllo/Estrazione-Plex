@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import ipaddress
 import json
 import os
 import pathlib
@@ -14,6 +15,7 @@ import re
 import threading
 import time
 from typing import Callable, Iterable, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -138,11 +140,27 @@ def _call_with_timeout(fn: Callable[[], object], timeout_s: int):
 
 
 def _decoded_plex_direct_candidates(uri: str) -> list[str]:
-    m = re.search(r"(?P<enc>(?:\d{1,3}-){3}\d{1,3})\.[^.]+\.plex\.direct", uri)
-    if not m:
+    parsed = urlparse(uri)
+    host = parsed.hostname or ""
+    first = host.split(".", 1)[0]
+    parts = first.split("-")
+    if len(parts) != 4:
         return []
-    ip = m.group("enc").replace("-", ".")
-    return [f"http://{ip}:32400", f"https://{ip}:32400"]
+    try:
+        if not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            return []
+    except Exception:
+        return []
+    ip = ".".join(parts)
+    port = parsed.port or 32400
+    return [f"http://{ip}:{port}", f"https://{ip}:{port}"]
+
+
+def _is_private_lan_ip(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip).is_private
+    except ValueError:
+        return False
 
 
 def _safe_bool(value: object) -> bool:
@@ -204,48 +222,79 @@ def _connect_to_resource(token: str, server_name: str, log_callback: LogCallback
 
     connections = list(getattr(resource, "connections", []) or [])
     sorted_connections = sorted(connections, key=_connection_score)
-    local_connections = [c for c in sorted_connections if _safe_bool(getattr(c, "local", False))]
-    remote_connections = [c for c in sorted_connections if not _safe_bool(getattr(c, "local", False))]
-    ordered_connections = local_connections + remote_connections if local_connections else sorted_connections
 
     session = requests.Session()
     session.verify = False
     token_candidates = _token_candidates(resource, token)
 
-    seen_urls: set[str] = set()
-    for conn in ordered_connections:
+    structured_candidates: list[tuple[int, str, bool, bool, bool]] = []
+    for conn in sorted_connections:
         uri = _connection_uri(conn).strip()
         if not uri:
             continue
         local = _safe_bool(getattr(conn, "local", False))
         relay = _safe_bool(getattr(conn, "relay", False))
 
-        candidate_urls: list[str] = []
+        decoded_candidates = _decoded_plex_direct_candidates(uri)
+        private_decoded_added = False
+        for decoded in decoded_candidates:
+            parsed_decoded = urlparse(decoded)
+            host = parsed_decoded.hostname or ""
+            is_private = _is_private_lan_ip(host)
+            if is_private:
+                structured_candidates.append((0, decoded, local, relay, True))
+                private_decoded_added = True
+
         if local:
-            candidate_urls.extend(_decoded_plex_direct_candidates(uri))
-        candidate_urls.append(uri)
+            structured_candidates.append((1, uri, local, relay, False))
 
-        for base_url in candidate_urls:
-            if base_url in seen_urls:
+        for decoded in decoded_candidates:
+            parsed_decoded = urlparse(decoded)
+            host = parsed_decoded.hostname or ""
+            is_private = _is_private_lan_ip(host)
+            if is_private and private_decoded_added:
                 continue
-            seen_urls.add(base_url)
-            log(f"Tentativo URI: {base_url} local={local} relay={relay}")
-            for candidate_token in token_candidates:
-                try:
-                    plex = PlexServer(base_url, candidate_token, timeout=12, session=session)
-                    _call_with_timeout(lambda: plex.library.sections(), timeout_s=15)
-                    log(f"Connessione riuscita su URI: {base_url}")
-                    return resource, plex
-                except FuturesTimeoutError:
-                    attempts.append((base_url, "TimeoutError"))
-                    log(f"Tentativo fallito: {base_url} local={local} relay={relay}: TimeoutError")
-                except Exception as exc:
-                    attempts.append((base_url, type(exc).__name__))
-                    log(f"Tentativo fallito: {base_url} local={local} relay={relay}: {type(exc).__name__}")
+            structured_candidates.append((2, decoded, local, relay, is_private))
 
-    details = "\n".join(f"- {uri}: {err_type}" for uri, err_type in attempts)
+        if not local:
+            base_priority = 4 if relay else 3
+            structured_candidates.append((base_priority, uri, local, relay, False))
+
+    seen_urls: set[str] = set()
+    private_attempted = False
+    private_success = False
+    for _priority, base_url, local, relay, is_private_candidate in sorted(structured_candidates, key=lambda t: t[0]):
+        if base_url in seen_urls:
+            continue
+        seen_urls.add(base_url)
+        if is_private_candidate:
+            private_attempted = True
+        log(f"Tentativo URI: {base_url} local={local} relay={relay} private={is_private_candidate}")
+        for candidate_token in token_candidates:
+            try:
+                plex = PlexServer(base_url, candidate_token, timeout=12, session=session)
+                _call_with_timeout(lambda: plex.library.sections(), timeout_s=15)
+                if is_private_candidate:
+                    private_success = True
+                log(f"Connessione riuscita su URI: {base_url}")
+                return resource, plex
+            except FuturesTimeoutError:
+                attempts.append((base_url, "TimeoutError"))
+                log(f"Tentativo fallito: {base_url} local={local} relay={relay} private={is_private_candidate}: TimeoutError")
+            except Exception as exc:
+                attempts.append((base_url, type(exc).__name__))
+                log(f"Tentativo fallito: {base_url} local={local} relay={relay} private={is_private_candidate}: {type(exc).__name__}")
+
+    detail_lines = [f"- {uri}: {err_type}" for uri, err_type in attempts[-20:]]
+    if not detail_lines:
+        detail_lines = ["- nessun tentativo registrato"]
+    private_note = ""
+    if private_attempted and not private_success:
+        private_note = " Nessuna connessione LAN/private funzionante trovata."
+    details = "\n".join(detail_lines)
     raise RuntimeError(
-        f"Impossibile connettersi al server Plex '{server_name}'. Tentativi effettuati:\n{details}"
+        f"Impossibile connettersi al server Plex '{server_name}'.{private_note} Tentativi effettuati:\
+{details}"
     )
 
 

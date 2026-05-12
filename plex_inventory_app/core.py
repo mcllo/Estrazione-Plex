@@ -134,9 +134,15 @@ def list_libraries(
 
 
 def _call_with_timeout(fn: Callable[[], object], timeout_s: int):
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(fn)
-        return fut.result(timeout=timeout_s)
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
+    try:
+        return future.result(timeout=timeout_s)
+    except FuturesTimeoutError:
+        future.cancel()
+        raise
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _decoded_plex_direct_candidates(uri: str) -> list[str]:

@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from .core import InventoryConfig, run_inventory
+from .core import InventoryConfig, list_libraries, run_inventory
 from .duplicate_analysis import analyze_duplicates
 
 
@@ -75,5 +75,28 @@ class DuplicateAnalysisWorker(QObject):
                 progress_callback=lambda done, total, msg: self.progress.emit(done, total, msg),
             )
             self.finished.emit(out)
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+
+
+class LibrariesWorker(QObject):
+    log = Signal(str)
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, token: str, server: str) -> None:
+        super().__init__()
+        self.token = token
+        self.server = server
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            libs = list_libraries(
+                self.token,
+                self.server,
+                log_callback=lambda msg: self.log.emit(msg),
+            )
+            self.finished.emit(libs)
         except Exception:
             self.failed.emit(traceback.format_exc())

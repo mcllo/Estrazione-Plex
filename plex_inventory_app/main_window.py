@@ -32,10 +32,10 @@ from PySide6.QtWidgets import (
 )
 
 from .advanced_options_dialog import AdvancedOptionsDialog
-from .core import InventoryConfig, list_libraries, list_plex_servers
+from .core import InventoryConfig, list_plex_servers
 from .duplicate_policy_v12 import POLICY_VERSION
 from .token_store import TokenStore
-from .workers import DuplicateAnalysisWorker, GenericWorker, InventoryWorker
+from .workers import DuplicateAnalysisWorker, GenericWorker, InventoryWorker, LibrariesWorker
 
 
 class MainWindow(QMainWindow):
@@ -420,12 +420,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Librerie", "Inserisci token e seleziona un server Plex.")
             return
         self._append_log(f"Carico librerie da {server}...")
-        self._run_background(
-            lambda: list_libraries(token, server, log_callback=self._append_log),
-            self._libraries_loaded,
-            "Caricamento librerie fallito",
-            on_error=self._libraries_failed,
-        )
+        thread = QThread(self)
+        worker = LibrariesWorker(token, server)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.log.connect(self._append_log)
+        worker.finished.connect(self._libraries_loaded)
+        worker.failed.connect(self._libraries_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._track_worker(thread, worker)
+        thread.start()
 
     def _libraries_loaded(self, libs: list[dict[str, str]]) -> None:
         self.library_list.clear()

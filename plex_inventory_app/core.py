@@ -145,6 +145,43 @@ def _decoded_plex_direct_candidates(uri: str) -> list[str]:
     return [f"http://{ip}:32400", f"https://{ip}:32400"]
 
 
+def _safe_bool(value: object) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _connection_uri(conn: object) -> str:
+    return str(getattr(conn, "uri", "") or "").rstrip("/")
+
+
+def _connection_score(conn: object) -> tuple[int, str]:
+    uri = _connection_uri(conn)
+    local = _safe_bool(getattr(conn, "local", False))
+    relay = _safe_bool(getattr(conn, "relay", False))
+    protocol = str(getattr(conn, "protocol", "") or "").lower()
+    score = 0
+    if local:
+        score -= 100
+    if relay:
+        score += 50
+    if protocol == "http":
+        score -= 5
+    if protocol == "https":
+        score -= 2
+    return score, uri
+
+
+def _token_candidates(resource: object, account_token: str) -> list[str]:
+    tokens: list[str] = []
+    for attr in ("accessToken", "token"):
+        value = str(getattr(resource, attr, "") or "").strip()
+        if value and value not in tokens:
+            tokens.append(value)
+    clean_account_token = account_token.strip()
+    if clean_account_token and clean_account_token not in tokens:
+        tokens.append(clean_account_token)
+    return tokens
+
+
 def _connect_to_resource(token: str, server_name: str, log_callback: LogCallback | None = None):
     log = log_callback or (lambda _msg: None)
     account = MyPlexAccount(token=token.strip())
@@ -166,51 +203,45 @@ def _connect_to_resource(token: str, server_name: str, log_callback: LogCallback
         log(f"Connessione legacy fallita: {type(exc).__name__}")
 
     connections = list(getattr(resource, "connections", []) or [])
+    sorted_connections = sorted(connections, key=_connection_score)
+    local_connections = [c for c in sorted_connections if _safe_bool(getattr(c, "local", False))]
+    remote_connections = [c for c in sorted_connections if not _safe_bool(getattr(c, "local", False))]
+    ordered_connections = local_connections + remote_connections if local_connections else sorted_connections
 
-    def _sort_key(conn) -> tuple[int, int, int]:
-        uri = str(getattr(conn, "uri", "") or "")
-        is_https = uri.lower().startswith("https://")
-        return (
-            0 if bool(getattr(conn, "local", False)) else 1,
-            0 if not bool(getattr(conn, "relay", False)) else 1,
-            0 if not is_https else 1,
-        )
+    session = requests.Session()
+    session.verify = False
+    token_candidates = _token_candidates(resource, token)
 
-    candidate_urls: list[str] = []
-    for conn in sorted(connections, key=_sort_key):
-        uri = str(getattr(conn, "uri", "") or "").strip()
+    seen_urls: set[str] = set()
+    for conn in ordered_connections:
+        uri = _connection_uri(conn).strip()
         if not uri:
             continue
+        local = _safe_bool(getattr(conn, "local", False))
+        relay = _safe_bool(getattr(conn, "relay", False))
+
+        candidate_urls: list[str] = []
+        if local:
+            candidate_urls.extend(_decoded_plex_direct_candidates(uri))
         candidate_urls.append(uri)
-        candidate_urls.extend(_decoded_plex_direct_candidates(uri))
 
-    seen: set[str] = set()
-    deduped_candidates: list[str] = []
-    for url in candidate_urls:
-        if url in seen:
-            continue
-        seen.add(url)
-        deduped_candidates.append(url)
-
-    for base_url in deduped_candidates:
-        log(f"Tentativo connessione URI: {base_url}")
-        try:
-            kwargs = {"timeout": 12}
-            if base_url.lower().startswith("https://") and ".plex.direct" not in base_url.lower():
-                session = requests.Session()
-                session.verify = False
-                kwargs["session"] = session
-
-            plex = PlexServer(base_url, token.strip(), **kwargs)
-            _call_with_timeout(lambda: plex.library.sections(), timeout_s=15)
-            log(f"Connessione riuscita su URI: {base_url}")
-            return resource, plex
-        except FuturesTimeoutError:
-            attempts.append((base_url, "TimeoutError"))
-            log(f"Tentativo fallito su URI {base_url}: TimeoutError")
-        except Exception as exc:
-            attempts.append((base_url, type(exc).__name__))
-            log(f"Tentativo fallito su URI {base_url}: {type(exc).__name__}")
+        for base_url in candidate_urls:
+            if base_url in seen_urls:
+                continue
+            seen_urls.add(base_url)
+            log(f"Tentativo URI: {base_url} local={local} relay={relay}")
+            for candidate_token in token_candidates:
+                try:
+                    plex = PlexServer(base_url, candidate_token, timeout=12, session=session)
+                    _call_with_timeout(lambda: plex.library.sections(), timeout_s=15)
+                    log(f"Connessione riuscita su URI: {base_url}")
+                    return resource, plex
+                except FuturesTimeoutError:
+                    attempts.append((base_url, "TimeoutError"))
+                    log(f"Tentativo fallito: {base_url} local={local} relay={relay}: TimeoutError")
+                except Exception as exc:
+                    attempts.append((base_url, type(exc).__name__))
+                    log(f"Tentativo fallito: {base_url} local={local} relay={relay}: {type(exc).__name__}")
 
     details = "\n".join(f"- {uri}: {err_type}" for uri, err_type in attempts)
     raise RuntimeError(

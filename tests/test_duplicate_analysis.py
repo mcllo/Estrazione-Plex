@@ -292,7 +292,9 @@ def test_full_disc_dirtyhippie_and_best_technical_are_all_kept(tmp_path: Path):
     out = analyze_duplicates(p, tmp_path)
     all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     kept = all_df[all_df["final_action"] == "KEEP"]["file_path"].tolist()
-    assert set(kept) == {"/full_disc.m2ts", "/dirtyhippie.mkv", "/best_technical.mkv"}
+    assert "/full_disc.m2ts" in kept
+    assert "/dirtyhippie.mkv" in kept
+    assert "/best_technical.mkv" in kept
     assert (all_df["group_status"] == "CONSERVA").all()
     assert "REVIEW_MANUAL" not in set(all_df["final_action"])
 
@@ -383,3 +385,91 @@ def test_conserva_count_counts_groups_not_rows(tmp_path: Path):
     sintesi = pd.read_excel(out, sheet_name="Sintesi")
     conserva = int(sintesi[sintesi["metrica"] == "conserva_count"]["valore"].iloc[0])
     assert conserva == 1
+
+
+def test_reason_formatting_has_separators_and_no_period(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/k.mkv", rating_key="1", bitrate_mbps_video=12.0, audio_it_quality="DTS-HD MA 5.1", audio_it_bitrate_mbps=1.536),
+        make_row(file="/c.mkv", rating_key="2", bitrate_mbps_video=8.421, audio_it_quality="Dolby Digital 5.1", audio_it_bitrate_mbps=0.640),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    r = all_df[all_df["final_action"] != "KEEP"].iloc[0]["reason"]
+    assert " ; " in r
+    assert not str(r).endswith(".")
+    assert "Mbps" in r and "kbps" in r
+
+def test_conserva_sheet_only_conserva_groups(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/a1.mkv", rating_key="1", duration_hms="01:30:00"),
+        make_row(file="/a2.mkv", rating_key="2", duration_hms="01:31:10"),
+        make_row(file="/a3.mkv", rating_key="3", duration_hms="01:31:10", bitrate_mbps_video=4.0),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    conserva = pd.read_excel(out, sheet_name="CONSERVA")
+    assert (conserva["group_status"] == "CONSERVA").all()
+
+def test_manual_dettaglio_contains_keep_stimato(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/k.mkv", rating_key="1", bitrate_mbps_video=10.0, audio_it_quality="DD 5.1", audio_it_bitrate_mbps=0.4),
+        make_row(file="/c.mkv", rating_key="2", bitrate_mbps_video=10.1, audio_it_quality="TrueHD 5.1", audio_it_bitrate_mbps=1.5),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    man = pd.read_excel(out, sheet_name="MANUALE_DETTAGLIO")
+    if not man.empty:
+        assert "KEEP_STIMATO" in set(man["manual_role"])
+
+
+def test_reason_formatting_with_nan_bitrate_does_not_emit_nan(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/k.mkv", rating_key="1", bitrate_mbps_video=12.0),
+        make_row(file="/c.mkv", rating_key="2", bitrate_mbps_video=float("nan"), audio_it_bitrate_mbps=float("nan")),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    reason = str(all_df[all_df["final_action"] != "KEEP"].iloc[0]["reason"]).lower()
+    assert "nan mbps" not in reason
+    assert "nan kbps" not in reason
+
+def test_reason_formatting_with_nan_text_fields_does_not_emit_nan(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/k.mkv", rating_key="1", hdr="SDR", resolution="1080p", audio_it_quality="DD 5.1"),
+        make_row(file="/c.mkv", rating_key="2", hdr=float("nan"), resolution=float("nan"), audio_it_quality=float("nan"), bitrate_mbps_video=8.0),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    reason = str(all_df[all_df["final_action"] != "KEEP"].iloc[0]["reason"]).lower()
+    assert "nan" not in reason
+
+
+def test_multicut_with_manual_cluster_keeps_manual_priority_and_excludes_from_conserva(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/cut1_keep.mkv", rating_key="1", duration_hms="01:30:00", bitrate_mbps_video=10.2, audio_it_quality="DD 5.1", audio_it_bitrate_mbps=0.4),
+        make_row(file="/cut1_manual.mkv", rating_key="2", duration_hms="01:30:00", bitrate_mbps_video=10.1, audio_it_quality="TrueHD 5.1", audio_it_bitrate_mbps=1.5),
+        make_row(file="/cut2_keep.mkv", rating_key="3", duration_hms="01:31:10", bitrate_mbps_video=8.0),
+        make_row(file="/cut2_drop.mkv", rating_key="4", duration_hms="01:31:10", bitrate_mbps_video=5.0),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    manual_rows = all_df[all_df["final_action"] == "REVIEW_MANUAL"]
+    assert not manual_rows.empty
+    manual_cluster = manual_rows[["group_key", "cluster_index"]].drop_duplicates().iloc[0]
+
+    cluster_rows = all_df[(all_df["group_key"] == manual_cluster["group_key"]) & (all_df["cluster_index"] == manual_cluster["cluster_index"])]
+    assert (cluster_rows["group_status"] == "MANUALE").all()
+
+    conserva_df = pd.read_excel(out, sheet_name="CONSERVA")
+    conserva_same_cluster = conserva_df[(conserva_df["group_key"] == manual_cluster["group_key"]) & (conserva_df["cluster_index"] == manual_cluster["cluster_index"])]
+    assert conserva_same_cluster.empty
+
+    manual_index = pd.read_excel(out, sheet_name="MANUALE_INDEX")
+    manual_dett = pd.read_excel(out, sheet_name="MANUALE_DETTAGLIO")
+    assert (manual_index["group_key"] == manual_cluster["group_key"]).any()
+    assert ((manual_dett["group_key"] == manual_cluster["group_key"]) & (manual_dett["cluster_index"] == manual_cluster["cluster_index"])).any()

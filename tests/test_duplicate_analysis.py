@@ -445,3 +445,31 @@ def test_reason_formatting_with_nan_text_fields_does_not_emit_nan(tmp_path: Path
     all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     reason = str(all_df[all_df["final_action"] != "KEEP"].iloc[0]["reason"]).lower()
     assert "nan" not in reason
+
+
+def test_multicut_with_manual_cluster_keeps_manual_priority_and_excludes_from_conserva(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/cut1_keep.mkv", rating_key="1", duration_hms="01:30:00", bitrate_mbps_video=10.2, audio_it_quality="DD 5.1", audio_it_bitrate_mbps=0.4),
+        make_row(file="/cut1_manual.mkv", rating_key="2", duration_hms="01:30:00", bitrate_mbps_video=10.1, audio_it_quality="TrueHD 5.1", audio_it_bitrate_mbps=1.5),
+        make_row(file="/cut2_keep.mkv", rating_key="3", duration_hms="01:31:10", bitrate_mbps_video=8.0),
+        make_row(file="/cut2_drop.mkv", rating_key="4", duration_hms="01:31:10", bitrate_mbps_video=5.0),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    manual_rows = all_df[all_df["final_action"] == "REVIEW_MANUAL"]
+    assert not manual_rows.empty
+    manual_cluster = manual_rows[["group_key", "cluster_index"]].drop_duplicates().iloc[0]
+
+    cluster_rows = all_df[(all_df["group_key"] == manual_cluster["group_key"]) & (all_df["cluster_index"] == manual_cluster["cluster_index"])]
+    assert (cluster_rows["group_status"] == "MANUALE").all()
+
+    conserva_df = pd.read_excel(out, sheet_name="CONSERVA")
+    conserva_same_cluster = conserva_df[(conserva_df["group_key"] == manual_cluster["group_key"]) & (conserva_df["cluster_index"] == manual_cluster["cluster_index"])]
+    assert conserva_same_cluster.empty
+
+    manual_index = pd.read_excel(out, sheet_name="MANUALE_INDEX")
+    manual_dett = pd.read_excel(out, sheet_name="MANUALE_DETTAGLIO")
+    assert (manual_index["group_key"] == manual_cluster["group_key"]).any()
+    assert ((manual_dett["group_key"] == manual_cluster["group_key"]) & (manual_dett["cluster_index"] == manual_cluster["cluster_index"])).any()

@@ -475,8 +475,9 @@ def analyze_duplicates(
         ])
     if not out_df.empty:
         out_df["group_status"] = out_df.groupby(["group_key", "cluster_index"])["final_action"].transform(lambda s: "MANUALE" if (s=="REVIEW_MANUAL").any() else ("CONSERVA" if (s=="KEEP").sum()>1 else "AUTO_GROUP"))
+        manual_clusters = out_df.groupby(["group_key", "cluster_index"])["final_action"].transform(lambda s: (s == "REVIEW_MANUAL").any())
         movie_cut_conserva = out_df.groupby("group_key")["cluster_index"].transform("nunique") > 1
-        out_df.loc[movie_cut_conserva, "group_status"] = "CONSERVA"
+        out_df.loc[movie_cut_conserva & ~manual_clusters, "group_status"] = "CONSERVA"
     keep_count = int((out_df.final_action == "KEEP").sum()) if not out_df.empty else 0
     delete_safe_count = int((out_df.final_action == "DELETE_SAFE").sum()) if not out_df.empty else 0
     delete_proposed_count = int((out_df.final_action == "DELETE_PROPOSED").sum()) if not out_df.empty else 0

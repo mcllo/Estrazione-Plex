@@ -25,12 +25,12 @@ def write_duplicate_report(output_path: Path, summary_df: pd.DataFrame, all_df: 
     if not manual_dettaglio.empty:
         grp = manual_dettaglio.groupby(["group_key", "cluster_index"], as_index=False)
         rows = []
-        for _, g in grp:
+        for n, (_, g) in enumerate(grp, start=1):
             keep = g[g.get("manual_role", "") == "KEEP_STIMATO"]["file_path"]
             rows.append({
                 "group_key": g.iloc[0]["group_key"],
                 "title_or_episode": g.iloc[0].get("title_or_episode", ""),
-                "manual_sheet_prefix": f"MAN_{g.iloc[0]['cluster_index']}",
+                "manual_sheet_prefix": f"MAN_{n:03d}",
                 "keep_stimato": keep.iloc[0] if not keep.empty else "",
                 "num_rows_to_review": int((g.get("manual_role", "") == "DA_VALUTARE").sum()),
                 "motivo_revisione": "restano vantaggi incrociati tra bitrate video e audio IT / sorgente",

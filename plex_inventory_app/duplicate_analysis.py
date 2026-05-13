@@ -234,11 +234,22 @@ def _choose_keep_indices(cluster: pd.DataFrame, keeper: pd.Series) -> set[int]:
     keep_indices: set[int] = {keeper.name}
     special_keepers = _allowed_special_keepers(cluster)
     best_technical = _best_technical_keeper(cluster)
+    non_lowbit = cluster[~cluster["lowbit4k_penalized"]]
+    full_disc_indices = set(non_lowbit[non_lowbit["source_tag"] == "full_disc"].index.tolist())
+    dirty_ai_indices = set(non_lowbit[non_lowbit["source_tag"].isin(["dirtyhippie", "ai_upscale"])].index.tolist())
+
+    if full_disc_indices and dirty_ai_indices and best_technical is not None:
+        best_full_disc = _rank_indices(cluster, full_disc_indices)[0]
+        best_dirty_ai = _rank_indices(cluster, dirty_ai_indices)[0]
+        return {best_full_disc, best_dirty_ai, best_technical}
+
     if special_keepers:
-        keep_indices = {_rank_indices(cluster, special_keepers)[0]}
-        if best_technical is not None and best_technical not in keep_indices:
+        keep_indices.add(_rank_indices(cluster, special_keepers)[0])
+        if best_technical is not None:
             keep_indices.add(best_technical)
-    return set(_rank_indices(cluster, keep_indices)[:2])
+    if len(keep_indices) > 2:
+        keep_indices = set(_rank_indices(cluster, keep_indices)[:2])
+    return keep_indices
 
 
 def analyze_duplicates(
@@ -414,7 +425,7 @@ def analyze_duplicates(
         f"KEEP: {keep_count}, DELETE_SAFE: {delete_safe_count}, "
         f"DELETE_PROPOSED: {delete_proposed_count}, REVIEW_MANUAL: {manual_count}"
     )
-    summary = pd.DataFrame({"metrica":["policy_version","policy_coverage_note","inventory_file","generated_at","total_rows","duplicate_groups","keep_count","delete_safe_count","delete_proposed_count","manual_count","conserva_count","debug_streams_used","debug_xml_used"],"valore":[POLICY_VERSION,"prima integrazione: alcune regole avanzate ancora parziali",str(inventory_path),datetime.now().isoformat(timespec="seconds"),len(df),dup_groups,keep_count,delete_safe_count,delete_proposed_count,manual_count,int((out_df["group_status"]=="CONSERVA").sum()) if not out_df.empty else 0,wb.debug_streams is not None,wb.debug_xml is not None]})
+    summary = pd.DataFrame({"metrica":["policy_version","policy_coverage_note","inventory_file","generated_at","total_rows","duplicate_groups","keep_count","delete_safe_count","delete_proposed_count","manual_count","conserva_count","debug_streams_used","debug_xml_used"],"valore":[POLICY_VERSION,"prima integrazione: alcune regole avanzate ancora parziali",str(inventory_path),datetime.now().isoformat(timespec="seconds"),len(df),dup_groups,keep_count,delete_safe_count,delete_proposed_count,manual_count,(out_df[out_df["group_status"] == "CONSERVA"].drop_duplicates(["group_key", "cluster_index"]).shape[0] if not out_df.empty else 0),wb.debug_streams is not None,wb.debug_xml is not None]})
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"report_duplicati_plex_classificato_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     log("Scrittura workbook finale...")

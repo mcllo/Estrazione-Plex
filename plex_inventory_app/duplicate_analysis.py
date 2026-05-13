@@ -11,7 +11,7 @@ import pandas as pd
 from .duplicate_policy_v12 import (
     POLICY_VERSION, audio_better, audio_score, basename, hdr_rank, lowbit4k_penalty,
     normalize_text, normalized_basename, parse_audio_quality, resolution_rank, source_tag_from_path, SOURCE_RANK,
-    candidate_score, candidate_sort_key,
+    candidate_score, candidate_sort_key, video_similar, video_better,
 )
 from .duplicate_report_writer import write_duplicate_report
 
@@ -315,6 +315,23 @@ def _choose_keep_indices(cluster: pd.DataFrame, keeper: pd.Series) -> set[int]:
     return keep_indices
 
 
+def find_manual_conflict_indices(cluster: pd.DataFrame, keep_indices: set[int]) -> set[int]:
+    states = set(cluster["italian_audio_state"].fillna("unknown").astype(str).str.lower().tolist())
+    if not ({"yes", "no"} <= states):
+        return set()
+    it_rows = cluster[cluster["italian_audio_state"].astype(str).str.lower() == "yes"]
+    noit_rows = cluster[cluster["italian_audio_state"].astype(str).str.lower() == "no"]
+    sort_cols = ["resolution_rank", "bitrate_mbps_video", "hdr_rank", "size_gib", "normalized_basename"]
+    best_it = it_rows.sort_values(sort_cols, ascending=[False, False, False, False, True]).iloc[0]
+    best_noit = noit_rows.sort_values(sort_cols, ascending=[False, False, False, False, True]).iloc[0]
+    if best_it["source_tag"] in {"full_disc", "dirtyhippie", "ai_upscale"} or best_noit["source_tag"] in {"full_disc", "dirtyhippie", "ai_upscale"}:
+        return set()
+    same_tier = int(best_it["resolution_rank"]) == int(best_noit["resolution_rank"]) and int(best_it["hdr_rank"]) == int(best_noit["hdr_rank"])
+    if same_tier and best_it.name not in keep_indices:
+        return {idx for idx in cluster.index if idx not in keep_indices}
+    return set()
+
+
 def analyze_duplicates(
     inventory_path: Path,
     output_dir: Path,
@@ -431,6 +448,7 @@ def analyze_duplicates(
         cluster["lowbit4k_penalized"] = cluster.apply(lambda r: lowbit4k_penalty(str(r.get("type", "")).lower()=="movie", int(r["resolution_rank"]), float(r.get("bitrate_mbps_video") or 0), bool(has_good_1080)), axis=1)
         keeper = choose_primary_keeper(cluster)
         keep_indices = _choose_keep_indices(cluster, keeper)
+        manual_conflict_indices = find_manual_conflict_indices(cluster, keep_indices)
 
         for idx, row in cluster.iterrows():
             action = "KEEP" if idx in keep_indices else "DELETE_SAFE"
@@ -440,22 +458,29 @@ def analyze_duplicates(
                 keep_it = parse_audio_quality(keeper.get("audio_it_quality"), keeper.get("audio_it_bitrate_mbps"))
                 row_en = parse_audio_quality(row.get("audio_en_quality"), row.get("audio_en_bitrate_mbps"))
                 keep_en = parse_audio_quality(keeper.get("audio_en_quality"), keeper.get("audio_en_bitrate_mbps"))
-                same_tier = int(row.get("resolution_rank") or 0) == int(keeper.get("resolution_rank") or 0) and int(row.get("hdr_rank") or 0) == int(keeper.get("hdr_rank") or 0)
-                rv = float(row.get("bitrate_mbps_video") or 0)
-                kv = float(keeper.get("bitrate_mbps_video") or 0)
-                rel = abs(rv-kv)/max(kv, 0.001)
-                video_similar = same_tier and abs(rv-kv) <= 2.0 and rel <= 0.10
-
                 if bool(row.get("lowbit4k_penalized")):
                     reason = f"regola 2160p: {ReasonBuilder.format_video_label(row)} sotto 12 Mbps con 1080p valida presente ; confronto keeper: {ReasonBuilder.format_video_label(keeper)}"
-                elif video_similar and audio_better(row_it, keep_it, "it"):
+                elif idx in manual_conflict_indices:
                     action = "REVIEW_MANUAL"
                     reason = f"video simile: {ReasonBuilder.format_video_label(row)} ≈ {ReasonBuilder.format_video_label(keeper)} ; audio IT migliore sul file da valutare: {ReasonBuilder.format_audio_it_label(row)} > {ReasonBuilder.format_audio_it_label(keeper)} ; vantaggi incrociati: video vs audio/sorgente"
-                elif video_similar and audio_better(row_en, keep_en, "en") and (not audio_better(row_it, keep_it, "it")):
+                elif row.get("source_tag") in {"dirtyhippie", "ai_upscale"} and not bool(row.get("lowbit4k_penalized")):
+                    action = "REVIEW_MANUAL"
+                    reason = "fonte speciale non penalizzata: richiede validazione manuale prima di eliminare"
+                elif video_similar(row, keeper) and audio_better(row_it, keep_it, "it"):
+                    action = "REVIEW_MANUAL"
+                    reason = f"video simile: {ReasonBuilder.format_video_label(row)} ≈ {ReasonBuilder.format_video_label(keeper)} ; audio IT migliore sul file da valutare: {ReasonBuilder.format_audio_it_label(row)} > {ReasonBuilder.format_audio_it_label(keeper)} ; vantaggi incrociati: video vs audio/sorgente"
+                elif video_similar(row, keeper) and audio_better(row_en, keep_en, "en") and (not audio_better(row_it, keep_it, "it")):
                     action = "DELETE_PROPOSED"
                     reason = f"video simile: {ReasonBuilder.format_video_label(row)} ≈ {ReasonBuilder.format_video_label(keeper)} ; audio IT equivalente: {ReasonBuilder.format_audio_it_label(row)} = {ReasonBuilder.format_audio_it_label(keeper)} ; vantaggio residuo audio EN sul file da valutare: {ReasonBuilder.format_audio_en_label(row)} > {ReasonBuilder.format_audio_en_label(keeper)} ; resta un vantaggio secondario audio EN"
                 else:
-                    reason = f"video inferiore: {ReasonBuilder.format_video_label(row)} < {ReasonBuilder.format_video_label(keeper)} ; audio IT inferiore: {ReasonBuilder.format_audio_it_label(row)} < {ReasonBuilder.format_audio_it_label(keeper)} ; sorgente diversa ({row.get('source_tag')} vs {keeper.get('source_tag')})"
+                    clauses = []
+                    if video_better(keeper, row):
+                        clauses.append(f"video inferiore: {ReasonBuilder.format_video_label(row)} < {ReasonBuilder.format_video_label(keeper)}")
+                    if audio_better(keep_it, row_it, "it"):
+                        clauses.append(f"audio IT inferiore: {ReasonBuilder.format_audio_it_label(row)} < {ReasonBuilder.format_audio_it_label(keeper)}")
+                    if row.get('source_tag') != keeper.get('source_tag'):
+                        clauses.append(f"sorgente diversa ({row.get('source_tag')} vs {keeper.get('source_tag')})")
+                    reason = " ; ".join(clauses) if clauses else "differenze contenute: copia ridondante"
 
             rows.append({**row.to_dict(), "title_or_episode": row.get("episode_title") or row.get("title_or_series"), "file_path": row.get("file"), "keep_reference": keeper.get("file"), "final_action": action, "reason": reason})
 

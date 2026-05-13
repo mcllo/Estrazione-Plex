@@ -235,8 +235,11 @@ def audio_better(candidate: AudioScore, reference: AudioScore, language: str = "
         return False
     if reference.codec_key == "unknown" and candidate.codec_key != "unknown":
         return True
-    if candidate.channels == reference.channels and candidate.codec_key == "ddp" and reference.codec_key == "dd" and (candidate.bitrate * 2.0) <= reference.bitrate:
-        return False
+    if candidate.codec_family == "lossy" and reference.codec_family == "lossy":
+        same_channels = candidate.channels == reference.channels
+        same_broad = candidate.broad_tier == reference.broad_tier and candidate.broad_tier != "unknown"
+        if (same_channels or same_broad) and (candidate.bitrate * 2.0) <= reference.bitrate:
+            return False
     # lossless guardrails
     if candidate.codec_family == "lossless_or_master" and reference.codec_family == "lossy":
         return _tier_num(candidate.broad_tier) + 1 >= _tier_num(reference.broad_tier)
@@ -248,9 +251,8 @@ def audio_better(candidate: AudioScore, reference: AudioScore, language: str = "
     return (candidate.total_score - reference.total_score) > threshold
 
 
-def audio_score(a: AudioScore) -> tuple[int, int, float, float]:
-    fam = {"unknown": 0, "lossy": 1, "lossless_or_master": 2}[a.codec_family]
-    return (fam, _tier_num(a.broad_tier), a.codec_score, a.total_score)
+def audio_score(a: AudioScore) -> float:
+    return float(a.total_score)
 
 
 def lowbit4k_penalty(is_movie: bool, row_resolution_rank: int, video_bitrate: float, has_good_1080p: bool) -> bool:
@@ -263,9 +265,9 @@ class DuplicateCandidateScore:
     video_bitrate: float
     resolution_rank: int
     hdr_rank: int
-    audio_it_score: object
+    audio_it_score: float
     source_rank: float
-    audio_en_score: object
+    audio_en_score: float
     size_gib: float
     normalized_basename: str
     source_tag: str
@@ -280,9 +282,9 @@ def candidate_score(row: object) -> DuplicateCandidateScore:
         _safe_float(get("bitrate_mbps_video"), 0.0),
         _safe_int(get("resolution_rank"), 0),
         _safe_int(get("hdr_rank"), 0),
-        _safe_score_tuple(get("audio_it_score")),
+        _safe_float(get("audio_it_score"), 0.0),
         _safe_float(get("source_rank"), 0.0),
-        _safe_score_tuple(get("audio_en_score")),
+        _safe_float(get("audio_en_score"), 0.0),
         _safe_float(get("size_gib"), 0.0),
         str(get("normalized_basename") or ""),
         source_tag,
@@ -296,9 +298,9 @@ def candidate_sort_key(score: DuplicateCandidateScore) -> tuple:
         -score.video_bitrate,
         -score.resolution_rank,
         -score.hdr_rank,
-        tuple(-x for x in _safe_score_tuple(score.audio_it_score)),
+        -score.audio_it_score,
         -score.source_rank,
-        tuple(-x for x in _safe_score_tuple(score.audio_en_score)),
+        -score.audio_en_score,
         -score.size_gib,
         score.normalized_basename,
     )

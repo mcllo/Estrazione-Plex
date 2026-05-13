@@ -47,8 +47,8 @@ def test_duration_split_60s(tmp_path: Path):
     df = pd.DataFrame([make_row(duration_hms="01:30:00", file="/a.mkv", rating_key="1"), make_row(duration_hms="01:31:05", file="/b.mkv", rating_key="2")])
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
-    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
-    assert all_df.empty
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    assert (all_df["final_action"] == "KEEP").sum() == 2
 
 
 def test_source_tags():
@@ -163,7 +163,7 @@ def test_special_original_plus_best_technical_stays_conserva(tmp_path: Path):
     ])
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
-    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     assert (all_df["final_action"] == "KEEP").sum() >= 2
     assert (all_df["group_status"] == "CONSERVA").any()
 
@@ -175,7 +175,7 @@ def test_unknown_full_disc_language_does_not_trigger_no_italian_manual(tmp_path:
     ])
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
-    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     assert not ((all_df["file_path"].str.contains("full_disc")) & (all_df["final_action"] == "REVIEW_MANUAL")).any()
 
 
@@ -186,7 +186,7 @@ def test_delete_proposed_only_for_residual_en_audio_advantage(tmp_path: Path):
     ])
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
-    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     assert "DELETE_PROPOSED" in set(all_df["final_action"])
 
 
@@ -197,7 +197,7 @@ def test_candidate_score_handles_nan_values():
     row["bitrate_mbps_video"] = float("nan")
     s = candidate_score(row)
     assert isinstance(s.video_bitrate, float)
-    assert isinstance(s.audio_it_score, tuple)
+    assert isinstance(s.audio_it_score, float)
     assert s.lowbit4k_penalized is False
 
 
@@ -264,7 +264,7 @@ def test_special_keep_not_more_than_two_in_ordinary_case(tmp_path: Path):
     ])
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
-    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     assert (all_df["final_action"] == "KEEP").sum() <= 2
 
 
@@ -276,7 +276,7 @@ def test_full_disc_primary_also_keeps_best_conventional_technical(tmp_path: Path
     ])
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
-    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     keeps = all_df[all_df["final_action"] == "KEEP"]["file_path"].tolist()
     assert any("full_disc_best" in x for x in keeps)
     assert any("tech_best" in x for x in keeps)
@@ -290,7 +290,7 @@ def test_full_disc_dirtyhippie_and_best_technical_are_all_kept(tmp_path: Path):
     ])
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
-    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     kept = all_df[all_df["final_action"] == "KEEP"]["file_path"].tolist()
     assert set(kept) == {"/full_disc.m2ts", "/dirtyhippie.mkv", "/best_technical.mkv"}
     assert (all_df["group_status"] == "CONSERVA").all()
@@ -306,7 +306,7 @@ def test_multiple_specials_without_full_disc_combo_still_limited(tmp_path: Path)
     ])
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
-    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     assert (all_df["final_action"] == "KEEP").sum() <= 2
 
 
@@ -319,8 +319,8 @@ def test_keep_selection_is_deterministic(tmp_path: Path):
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out1 = analyze_duplicates(p, tmp_path)
     out2 = analyze_duplicates(p, tmp_path)
-    keeps1 = pd.read_excel(out1, sheet_name="Tutte_le_decisioni")
-    keeps2 = pd.read_excel(out2, sheet_name="Tutte_le_decisioni")
+    keeps1 = pd.read_excel(out1, sheet_name="TUTTE_LE_DECISIONI")
+    keeps2 = pd.read_excel(out2, sheet_name="TUTTE_LE_DECISIONI")
     files1 = sorted(keeps1[keeps1["final_action"] == "KEEP"]["file_path"].tolist())
     files2 = sorted(keeps2[keeps2["final_action"] == "KEEP"]["file_path"].tolist())
     assert files1 == files2
@@ -336,6 +336,50 @@ def test_actions_and_sheets(tmp_path: Path):
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
     xls = pd.ExcelFile(out)
-    assert set(["Sintesi","Da_eliminare","Da_verificare","Conserva","Tutte_le_decisioni"]).issubset(set(xls.sheet_names))
-    all_df = pd.read_excel(out, sheet_name="Tutte_le_decisioni")
+    assert set(["Sintesi","CONSERVA","ELIMINA_SICURO","ELIMINA_PROPOSTI","MANUALE_INDEX","MANUALE_DETTAGLIO","TUTTE_LE_DECISIONI"]).issubset(set(xls.sheet_names))
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     assert {"KEEP", "DELETE_PROPOSED", "REVIEW_MANUAL"}.issubset(set(all_df["final_action"]))
+
+
+def test_candidate_sort_key_prefers_higher_it_audio_score_when_video_equal():
+    r1 = pd.Series(make_row(file="/a.mkv", bitrate_mbps_video=8.0, size_gib=5.0))
+    r2 = pd.Series(make_row(file="/b.mkv", bitrate_mbps_video=8.0, size_gib=5.0))
+    for r in (r1, r2):
+        r["resolution_rank"] = 1080
+        r["hdr_rank"] = 0
+        r["source_rank"] = 6.0
+        r["normalized_basename"] = r["file"]
+        r["lowbit4k_penalized"] = False
+    r1["audio_it_score"] = 7.0
+    r2["audio_it_score"] = 8.5
+    r1["audio_en_score"] = 6.0
+    r2["audio_en_score"] = 6.0
+    assert candidate_sort_key(candidate_score(r2)) < candidate_sort_key(candidate_score(r1))
+
+
+def test_candidate_sort_key_prefers_higher_en_audio_score_when_it_equal():
+    r1 = pd.Series(make_row(file="/a.mkv", bitrate_mbps_video=8.0, size_gib=5.0))
+    r2 = pd.Series(make_row(file="/b.mkv", bitrate_mbps_video=8.0, size_gib=5.0))
+    for r in (r1, r2):
+        r["resolution_rank"] = 1080
+        r["hdr_rank"] = 0
+        r["source_rank"] = 6.0
+        r["normalized_basename"] = r["file"]
+        r["lowbit4k_penalized"] = False
+        r["audio_it_score"] = 8.0
+    r1["audio_en_score"] = 6.1
+    r2["audio_en_score"] = 7.4
+    assert candidate_sort_key(candidate_score(r2)) < candidate_sort_key(candidate_score(r1))
+
+
+def test_conserva_count_counts_groups_not_rows(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/full_disc.m2ts", container="m2ts", rating_key="1", bitrate_mbps_video=11.5, audio_it_quality=""),
+        make_row(file="/dirtyhippie.mkv", rating_key="2", bitrate_mbps_video=6.2),
+        make_row(file="/best_technical.mkv", rating_key="3", bitrate_mbps_video=9.8, audio_it_quality="TrueHD 5.1", audio_it_bitrate_mbps=1.1),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    sintesi = pd.read_excel(out, sheet_name="Sintesi")
+    conserva = int(sintesi[sintesi["metrica"] == "conserva_count"]["valore"].iloc[0])
+    assert conserva == 1

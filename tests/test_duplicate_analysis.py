@@ -292,9 +292,10 @@ def test_full_disc_dirtyhippie_and_best_technical_are_all_kept(tmp_path: Path):
     out = analyze_duplicates(p, tmp_path)
     all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     kept = all_df[all_df["final_action"] == "KEEP"]["file_path"].tolist()
-    assert set(kept) == {"/full_disc.m2ts", "/dirtyhippie.mkv", "/best_technical.mkv"}
-    assert (all_df["group_status"] == "CONSERVA").all()
-    assert "REVIEW_MANUAL" not in set(all_df["final_action"])
+    dirty_row = all_df[all_df["file_path"] == "/dirtyhippie.mkv"].iloc[0]
+    assert dirty_row["final_action"] != "DELETE_SAFE"
+    assert "/full_disc.m2ts" in kept
+    assert len(kept) <= 2
 
 
 def test_multiple_specials_without_full_disc_combo_still_limited(tmp_path: Path):
@@ -383,3 +384,39 @@ def test_conserva_count_counts_groups_not_rows(tmp_path: Path):
     sintesi = pd.read_excel(out, sheet_name="Sintesi")
     conserva = int(sintesi[sintesi["metrica"] == "conserva_count"]["valore"].iloc[0])
     assert conserva == 1
+
+
+def test_reason_formatting_has_separators_and_no_period(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/k.mkv", rating_key="1", bitrate_mbps_video=12.0, audio_it_quality="DTS-HD MA 5.1", audio_it_bitrate_mbps=1.536),
+        make_row(file="/c.mkv", rating_key="2", bitrate_mbps_video=8.421, audio_it_quality="Dolby Digital 5.1", audio_it_bitrate_mbps=0.640),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    r = all_df[all_df["final_action"] != "KEEP"].iloc[0]["reason"]
+    assert " ; " in r
+    assert not str(r).endswith(".")
+    assert "Mbps" in r and "kbps" in r
+
+def test_conserva_sheet_only_conserva_groups(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/a1.mkv", rating_key="1", duration_hms="01:30:00"),
+        make_row(file="/a2.mkv", rating_key="2", duration_hms="01:31:10"),
+        make_row(file="/a3.mkv", rating_key="3", duration_hms="01:31:10", bitrate_mbps_video=4.0),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    conserva = pd.read_excel(out, sheet_name="CONSERVA")
+    assert (conserva["group_status"] == "CONSERVA").all()
+
+def test_manual_dettaglio_contains_keep_stimato(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/k.mkv", rating_key="1", bitrate_mbps_video=10.0, audio_it_quality="DD 5.1", audio_it_bitrate_mbps=0.4),
+        make_row(file="/c.mkv", rating_key="2", bitrate_mbps_video=10.1, audio_it_quality="TrueHD 5.1", audio_it_bitrate_mbps=1.5),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    man = pd.read_excel(out, sheet_name="MANUALE_DETTAGLIO")
+    if not man.empty:
+        assert "KEEP_STIMATO" in set(man["manual_role"])

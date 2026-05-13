@@ -15,6 +15,51 @@ from .duplicate_policy_v12 import (
 )
 from .duplicate_report_writer import write_duplicate_report
 
+
+class ReasonBuilder:
+    @staticmethod
+    def _fmt_video_bitrate(value: object) -> str:
+        try:
+            return f"{float(value):.3f} Mbps"
+        except (TypeError, ValueError):
+            return "n/d"
+
+    @staticmethod
+    def _fmt_audio_kbps(value: object) -> str:
+        try:
+            return f"{int(round(float(value) * 1000.0))} kbps"
+        except (TypeError, ValueError):
+            return "n/d"
+
+    @staticmethod
+    def format_video_label(row: pd.Series) -> str:
+        codec = str(row.get("videoCodec") or "").strip()
+        res = str(row.get("resolution") or "").strip()
+        hdr = str(row.get("hdr") or "SDR").strip()
+        bitrate = ReasonBuilder._fmt_video_bitrate(row.get("bitrate_mbps_video"))
+        parts = [x for x in [codec, res, hdr, bitrate] if x]
+        return " ".join(parts)
+
+    @staticmethod
+    def format_audio_it_label(row: pd.Series) -> str:
+        quality = str(row.get("audio_it_quality") or "").strip()
+        bitrate = ReasonBuilder._fmt_audio_kbps(row.get("audio_it_bitrate_mbps"))
+        return " ".join([x for x in [quality, bitrate] if x]).strip()
+
+    @staticmethod
+    def format_audio_en_label(row: pd.Series) -> str:
+        quality = str(row.get("audio_en_quality") or "").strip()
+        bitrate = ReasonBuilder._fmt_audio_kbps(row.get("audio_en_bitrate_mbps"))
+        return " ".join([x for x in [quality, bitrate] if x]).strip()
+
+    @staticmethod
+    def build_keep_reason() -> str:
+        return "versione tenuta con le regole attuali"
+
+    @staticmethod
+    def build_conserva_reason() -> str:
+        return "durata diversa del film: tengo una versione per ciascun taglio"
+
 REQUIRED_COLUMNS = ["type","title_or_series","season","episode","episode_title","year","resolution","hdr","videoCodec","container","duration_hms","bitrate_mbps_video","audio_it_bitrate_mbps","audio_it_quality","audio_en_bitrate_mbps","audio_en_quality","size_gib","imdb_id","rating_key","file"]
 
 
@@ -238,10 +283,10 @@ def _choose_keep_indices(cluster: pd.DataFrame, keeper: pd.Series) -> set[int]:
     full_disc_indices = set(non_lowbit[non_lowbit["source_tag"] == "full_disc"].index.tolist())
     dirty_ai_indices = set(non_lowbit[non_lowbit["source_tag"].isin(["dirtyhippie", "ai_upscale"])].index.tolist())
 
-    if full_disc_indices and dirty_ai_indices and best_technical is not None:
+    if full_disc_indices and dirty_ai_indices:
         best_full_disc = _rank_indices(cluster, full_disc_indices)[0]
         best_dirty_ai = _rank_indices(cluster, dirty_ai_indices)[0]
-        return {best_full_disc, best_dirty_ai, best_technical}
+        return {best_full_disc, best_dirty_ai}
 
     if special_keepers:
         keep_indices.add(_rank_indices(cluster, special_keepers)[0])
@@ -358,51 +403,52 @@ def analyze_duplicates(
     total_units = 7 + max(len(movie_groups), 1) + duplicate_rows_total + max(total_clusters, 1) + 2
     done_units = min(done_units, total_units)
     for processed, cluster in enumerate(duplicate_clusters, start=1):
-        cluster = df.loc[cluster.index]
+        cluster = df.loc[cluster.index].copy()
         done_units = min(done_units + 1, total_units)
         if processed % 25 == 0 or processed == total_clusters:
             log(f"Classificazione gruppi: {processed}/{total_clusters}")
             progress(done_units, total_units, "Classificazione gruppi duplicati")
         dup_groups += 1
         has_good_1080 = ((cluster["resolution_rank"] == 1080) & (cluster["bitrate_mbps_video"].fillna(0) > 1.5)).any()
-        cluster = cluster.copy()
         cluster["lowbit4k_penalized"] = cluster.apply(lambda r: lowbit4k_penalty(str(r.get("type", "")).lower()=="movie", int(r["resolution_rank"]), float(r.get("bitrate_mbps_video") or 0), bool(has_good_1080)), axis=1)
         keeper = choose_primary_keeper(cluster)
         keep_indices = _choose_keep_indices(cluster, keeper)
-        for _, row in cluster.iterrows():
-            action = "KEEP" if row.name in keep_indices else "DELETE_SAFE"
-            reason = ["versione tenuta con le regole attuali"] if action == "KEEP" else []
+        # cap hard: max 2 keep per cluster
+        if len(keep_indices) > 2:
+            keep_indices = set(_rank_indices(cluster, keep_indices)[:2])
+
+        cluster_manual = False
+        for idx, row in cluster.iterrows():
+            action = "KEEP" if idx in keep_indices else "DELETE_SAFE"
+            reason = ReasonBuilder.build_keep_reason() if action == "KEEP" else ""
             if action != "KEEP":
-                row_video = float(row.get("bitrate_mbps_video") or 0)
-                keeper_video = float(keeper.get("bitrate_mbps_video") or 0)
-                if row_video < keeper_video:
-                    reason.append(f"bitrate video inferiore ({row_video:.3f} < {keeper_video:.3f} Mbps)")
-                if int(row.get("resolution_rank") or 0) < int(keeper.get("resolution_rank") or 0):
-                    reason.append(f"risoluzione inferiore: {row.get('resolution')} vs {keeper.get('resolution')}")
-                if int(row.get("hdr_rank") or 0) < int(keeper.get("hdr_rank") or 0):
-                    reason.append(f"HDR inferiore: {row.get('hdr')} vs {keeper.get('hdr')}")
-                if row.get("source_tag") != keeper.get("source_tag"):
-                    reason.append(f"sorgente diversa ({row.get('source_tag')} vs {keeper.get('source_tag')})")
                 row_it = parse_audio_quality(row.get("audio_it_quality"), row.get("audio_it_bitrate_mbps"))
                 keep_it = parse_audio_quality(keeper.get("audio_it_quality"), keeper.get("audio_it_bitrate_mbps"))
-                same_tier = int(row.get("resolution_rank") or 0) == int(keeper.get("resolution_rank") or 0) and int(row.get("hdr_rank") or 0) == int(keeper.get("hdr_rank") or 0)
-                italian_state = str(row.get("italian_audio_state") or "unknown")
-                if audio_better(row_it, keep_it, "it") and same_tier:
-                    action = "REVIEW_MANUAL"
-                    reason = ["vantaggi incrociati: video vs audio/sorgente", "audio IT migliore sul file da valutare"]
-                if italian_state == "yes" and str(keeper.get("italian_audio_state") or "unknown") == "no" and same_tier:
-                    action = "REVIEW_MANUAL"
-                    reason = ["vantaggi incrociati: video vs audio/sorgente", "audio IT migliore sul file da valutare"]
                 row_en = parse_audio_quality(row.get("audio_en_quality"), row.get("audio_en_bitrate_mbps"))
                 keep_en = parse_audio_quality(keeper.get("audio_en_quality"), keeper.get("audio_en_bitrate_mbps"))
-                if action == "DELETE_SAFE" and audio_better(row_en, keep_en, "en") and not audio_better(row_it, keep_it, "it") and same_tier:
+                same_tier = int(row.get("resolution_rank") or 0) == int(keeper.get("resolution_rank") or 0) and int(row.get("hdr_rank") or 0) == int(keeper.get("hdr_rank") or 0)
+                rv = float(row.get("bitrate_mbps_video") or 0)
+                kv = float(keeper.get("bitrate_mbps_video") or 0)
+                rel = abs(rv-kv)/max(kv, 0.001)
+                video_similar = same_tier and abs(rv-kv) <= 2.0 and rel <= 0.10
+
+                if bool(row.get("lowbit4k_penalized")):
+                    reason = f"regola 2160p: {ReasonBuilder.format_video_label(row)} sotto 12 Mbps con 1080p valida presente ; confronto keeper: {ReasonBuilder.format_video_label(keeper)}"
+                elif video_similar and audio_better(row_it, keep_it, "it"):
+                    action = "REVIEW_MANUAL"
+                    cluster_manual = True
+                    reason = f"video simile: {ReasonBuilder.format_video_label(row)} ≈ {ReasonBuilder.format_video_label(keeper)} ; audio IT migliore sul file da valutare: {ReasonBuilder.format_audio_it_label(row)} > {ReasonBuilder.format_audio_it_label(keeper)} ; vantaggi incrociati: video vs audio/sorgente"
+                elif video_similar and audio_better(row_en, keep_en, "en") and (not audio_better(row_it, keep_it, "it")):
                     action = "DELETE_PROPOSED"
-                    reason = ["vantaggio residuo audio EN sul file da valutare", "resta un vantaggio secondario audio EN"]
-            if len(cluster) == 1 and action == "KEEP":
-                reason = ["durata diversa del film: tengo una versione per ciascun taglio"]
-            if action == "DELETE_SAFE" and not reason:
-                reason = ["differenze contenute: copia ridondante"]
-            rows.append({**row.to_dict(), "title_or_episode": row.get("episode_title") or row.get("title_or_series"), "file_path": row.get("file"), "keep_reference": keeper.get("file"), "final_action": action, "reason": " ; ".join(reason)})
+                    reason = f"video simile: {ReasonBuilder.format_video_label(row)} ≈ {ReasonBuilder.format_video_label(keeper)} ; audio IT equivalente: {ReasonBuilder.format_audio_it_label(row)} = {ReasonBuilder.format_audio_it_label(keeper)} ; vantaggio residuo audio EN sul file da valutare: {ReasonBuilder.format_audio_en_label(row)} > {ReasonBuilder.format_audio_en_label(keeper)} ; resta un vantaggio secondario audio EN"
+                else:
+                    reason = f"video inferiore: {ReasonBuilder.format_video_label(row)} < {ReasonBuilder.format_video_label(keeper)} ; audio IT inferiore: {ReasonBuilder.format_audio_it_label(row)} < {ReasonBuilder.format_audio_it_label(keeper)} ; sorgente diversa ({row.get('source_tag')} vs {keeper.get('source_tag')})"
+
+            rows.append({**row.to_dict(), "title_or_episode": row.get("episode_title") or row.get("title_or_series"), "file_path": row.get("file"), "keep_reference": keeper.get("file"), "final_action": action, "reason": reason})
+
+        cluster_rows = [r for r in rows if r["group_key"] == cluster.iloc[0]["group_key"] and r["cluster_index"] == cluster.iloc[0]["cluster_index"]]
+        if len(cluster_rows) == 1 and cluster_rows[0]["final_action"] == "KEEP":
+            cluster_rows[0]["reason"] = ReasonBuilder.build_conserva_reason()
     if total_clusters == 0:
         done_units += 1
         progress(done_units, total_units, "Classificazione gruppi duplicati")
@@ -416,6 +462,8 @@ def analyze_duplicates(
         ])
     if not out_df.empty:
         out_df["group_status"] = out_df.groupby(["group_key", "cluster_index"])["final_action"].transform(lambda s: "MANUALE" if (s=="REVIEW_MANUAL").any() else ("CONSERVA" if (s=="KEEP").sum()>1 else "AUTO_GROUP"))
+        movie_cut_conserva = out_df.groupby("group_key")["cluster_index"].transform("nunique") > 1
+        out_df.loc[movie_cut_conserva, "group_status"] = "CONSERVA"
     keep_count = int((out_df.final_action == "KEEP").sum()) if not out_df.empty else 0
     delete_safe_count = int((out_df.final_action == "DELETE_SAFE").sum()) if not out_df.empty else 0
     delete_proposed_count = int((out_df.final_action == "DELETE_PROPOSED").sum()) if not out_df.empty else 0
@@ -425,7 +473,7 @@ def analyze_duplicates(
         f"KEEP: {keep_count}, DELETE_SAFE: {delete_safe_count}, "
         f"DELETE_PROPOSED: {delete_proposed_count}, REVIEW_MANUAL: {manual_count}"
     )
-    summary = pd.DataFrame({"metrica":["policy_version","policy_coverage_note","inventory_file","generated_at","total_rows","duplicate_groups","keep_count","delete_safe_count","delete_proposed_count","manual_count","conserva_count","debug_streams_used","debug_xml_used"],"valore":[POLICY_VERSION,"prima integrazione: alcune regole avanzate ancora parziali",str(inventory_path),datetime.now().isoformat(timespec="seconds"),len(df),dup_groups,keep_count,delete_safe_count,delete_proposed_count,manual_count,(out_df[out_df["group_status"] == "CONSERVA"].drop_duplicates(["group_key", "cluster_index"]).shape[0] if not out_df.empty else 0),wb.debug_streams is not None,wb.debug_xml is not None]})
+    summary = pd.DataFrame({"metrica":["policy_version","policy_coverage_note","inventory_file","generated_at","total_rows","duplicate_groups","keep_count","delete_safe_count","delete_proposed_count","manual_count","conserva_count","debug_streams_used","debug_xml_used"],"valore":[POLICY_VERSION,"prima integrazione: alcune regole avanzate ancora parziali",str(inventory_path),datetime.now().isoformat(timespec="seconds"),len(df),dup_groups,keep_count,delete_safe_count,delete_proposed_count,manual_count,(out_df.drop_duplicates(["group_key", "cluster_index"]).query("group_status == 'CONSERVA'").shape[0] if not out_df.empty else 0),wb.debug_streams is not None,wb.debug_xml is not None]})
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"report_duplicati_plex_classificato_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     log("Scrittura workbook finale...")

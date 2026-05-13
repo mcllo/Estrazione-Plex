@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 import re
+import math
 import pandas as pd
 
 from .duplicate_policy_v12 import (
@@ -15,6 +16,30 @@ from .duplicate_policy_v12 import (
 from .duplicate_report_writer import write_duplicate_report
 
 REQUIRED_COLUMNS = ["type","title_or_series","season","episode","episode_title","year","resolution","hdr","videoCodec","container","duration_hms","bitrate_mbps_video","audio_it_bitrate_mbps","audio_it_quality","audio_en_bitrate_mbps","audio_en_quality","size_gib","imdb_id","rating_key","file"]
+
+
+MISSING_TOKENS = {"", "nan", "null", "none", "-", "—", "n/a", "na"}
+
+def _is_missing_value(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and pd.isna(value):
+        return True
+    text = str(value).strip().lower()
+    return text in MISSING_TOKENS
+
+def _normalized_year(value: object) -> str:
+    if _is_missing_value(value):
+        return ""
+    try:
+        num = float(value)
+        if pd.isna(num):
+            return ""
+        if num.is_integer():
+            return str(int(num))
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
 
 
 @dataclass
@@ -63,11 +88,14 @@ def load_inventory_workbook(path: Path, log_callback: Callable[[str], None] | No
 
 
 def movie_group_key(row: pd.Series) -> str:
-    if str(row.get("imdb_id") or "").strip():
-        return f"movie:imdb:{row['imdb_id']}"
-    if str(row.get("tmdb_id") or "").strip():
-        return f"movie:tmdb:{row['tmdb_id']}"
-    return f"movie:titleyear:{normalize_text(row.get('title_or_series'))}:{str(row.get('year') or '').strip()}"
+    year = _normalized_year(row.get("year"))
+    imdb = "" if _is_missing_value(row.get("imdb_id")) else str(row.get("imdb_id")).strip()
+    tmdb = "" if _is_missing_value(row.get("tmdb_id")) else str(row.get("tmdb_id")).strip()
+    if imdb:
+        return f"movie:imdb:{imdb}"
+    if tmdb:
+        return f"movie:tmdb:{tmdb}"
+    return f"movie:titleyear:{normalize_text(row.get('title_or_series'))}:{year}"
 
 
 def _episode_component(value: object) -> str:
@@ -91,7 +119,7 @@ def tv_group_key(row: pd.Series) -> str:
     title = normalize_text(row.get("title_or_series"))
     season = _episode_component(row.get("season"))
     episode = _episode_component(row.get("episode"))
-    year = str(row.get("year") or "").strip()
+    year = _normalized_year(row.get("year"))
     return f"tv:{title}:{year}:s{season}:e{episode}" if year else f"tv:{title}:s{season}:e{episode}"
 
 
@@ -101,28 +129,19 @@ def build_group_key(row: pd.Series) -> str:
 
 def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.DataFrame | None) -> str:
     rk = str(row.get("rating_key") or "")
-    file_path = str(row.get("file") or "")
     pos = {"italian", "italiano", "ita", "it"}
-    neg = {"latino", "latin", "castilian", "spanish", "espanol", "spa"}
-    unknown_tokens = {"unknown", "und", "undefined", "none", "null", "empty"}
-    def _safe_float_local(value: object) -> float:
-        try:
-            if value is None:
-                return 0.0
-            parsed = float(value)
-            return 0.0 if pd.isna(parsed) else parsed
-        except (TypeError, ValueError):
-            return 0.0
+    strong_neg = {"english", "eng", "french", "fre", "spanish", "spa", "japanese", "jpn", "german", "deu"}
+    unknown_tokens = {"unknown", "und", "undefined", "none", "null", "empty", "audio", "track", "stream"}
+
     def _row_tokens(s: pd.Series, cols: list[str]) -> set[str]:
         text = " ".join(str(s.get(c, "")) for c in cols).lower()
         return set(re.findall(r"[a-z]+", text))
-    def _scan_streams(df: pd.DataFrame | None) -> str | None:
+
+    def _scan(df: pd.DataFrame | None, cols_wanted: set[str]) -> str | None:
         if df is None:
             return None
         cols = {c.lower(): c for c in df.columns}
-        matches = df
-        if "rating_key" in cols:
-            matches = df[df[cols["rating_key"]].astype(str) == rk]
+        matches = df[df[cols["rating_key"]].astype(str) == rk] if "rating_key" in cols else df
         if matches.empty:
             return None
         type_col = next((cols[k] for k in ["streamtype", "st_streamtype", "stream_type"] if k in cols), None)
@@ -130,44 +149,35 @@ def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.D
             matches = matches[matches[type_col].astype(str).str.lower().isin(["2", "audio"])]
         if matches.empty:
             return "unknown"
-        scan_cols = [c for c in matches.columns if c.lower() in {"lang", "language", "languagetag", "languagecode", "title", "displaytitle", "extendeddisplaytitle", "st_language", "st_languagetag", "st_languagecode", "st_title", "st_displaytitle", "st_extendeddisplaytitle"}]
-        has_non_it = False
-        for _, s in matches.iterrows():
-            tokens = _row_tokens(s, scan_cols)
-            if tokens & pos and not (tokens & neg):
+        scan_cols = [c for c in matches.columns if c.lower() in cols_wanted]
+        seen_strong_neg = False
+        for _, r in matches.iterrows():
+            tokens = _row_tokens(r, scan_cols)
+            if tokens & pos:
                 return "yes"
-            if tokens and tokens.issubset(unknown_tokens):
-                continue
-            if tokens and not (tokens & pos):
-                has_non_it = True
-        return "no" if has_non_it else "unknown"
-    def _scan_xml(df: pd.DataFrame | None) -> str | None:
-        if df is None:
-            return None
-        cols = {c.lower(): c for c in df.columns}
-        matches = df
-        if "rating_key" in cols:
-            matches = df[df[cols["rating_key"]].astype(str) == rk]
-        if matches.empty:
-            return None
-        scan_cols = [c for c in matches.columns if c.lower() in {"dbg_audio_it_language", "dbg_audio_it_languagecode", "dbg_audio_it_title", "dbg_audio_it_displaytitle", "dbg_audio_it_extendeddisplaytitle", "dbg_audio_streams"}]
-        for _, s in matches.iterrows():
-            tokens = _row_tokens(s, scan_cols)
-            if tokens & pos and not (tokens & neg):
-                return "yes"
-        text = " ".join(matches[scan_cols].astype(str).fillna("").agg(" ".join, axis=1).tolist()).lower() if scan_cols else ""
-        if any(x in text for x in ["english", "eng", "french", "fre", "spa", "spanish"]):
-            return "no"
-        return "unknown"
-    for src in (_scan_streams(ds), _scan_xml(dx)):
-        if src is not None:
-            return src
-    if _safe_float_local(row.get("audio_it_bitrate_mbps")) > 0 or str(row.get("audio_it_quality") or "").strip():
-        return "yes"
-    if source_tag_from_path(file_path, str(row.get("container") or "")) == "full_disc":
-        return "unknown"
-    return "unknown"
+            if tokens and not tokens.issubset(unknown_tokens) and (tokens & strong_neg):
+                seen_strong_neg = True
+        return "no" if seen_strong_neg else "unknown"
 
+    stream_state = _scan(ds, {"lang", "language", "languagetag", "languagecode", "title", "displaytitle", "extendeddisplaytitle", "st_language", "st_languagetag", "st_languagecode", "st_title", "st_displaytitle", "st_extendeddisplaytitle"})
+    xml_state = _scan(dx, {"dbg_audio_it_language", "dbg_audio_it_languagecode", "dbg_audio_it_title", "dbg_audio_it_displaytitle", "dbg_audio_it_extendeddisplaytitle", "dbg_audio_streams"})
+
+    if stream_state == "yes":
+        return "yes"
+    if stream_state == "no":
+        return "no"
+    if xml_state in {"yes", "no"}:
+        return xml_state
+    if stream_state == "unknown" or xml_state == "unknown":
+        return "unknown"
+
+    try:
+        it_bitrate = float(row.get("audio_it_bitrate_mbps") or 0)
+    except (TypeError, ValueError):
+        it_bitrate = 0
+    if it_bitrate > 0 or str(row.get("audio_it_quality") or "").strip():
+        return "yes"
+    return "unknown"
 
 def _duration_cluster_movie(group: pd.DataFrame) -> pd.Series:
     d = group["duration_seconds"].fillna(0).astype(int).sort_values()
@@ -221,37 +231,14 @@ def _best_technical_keeper(cluster: pd.DataFrame) -> int | None:
 
 
 def _choose_keep_indices(cluster: pd.DataFrame, keeper: pd.Series) -> set[int]:
-    # App extension: when full_disc, DirtyHippie/AI-upscale and best technical coexist,
-    # keep all three as CONSERVA. This is general and not title-specific.
     keep_indices: set[int] = {keeper.name}
     special_keepers = _allowed_special_keepers(cluster)
     best_technical = _best_technical_keeper(cluster)
-    special_tags = {"full_disc", "dirtyhippie", "ai_upscale"}
-    non_lowbit = cluster[~cluster["lowbit4k_penalized"]]
-    full_disc_indices = set(non_lowbit[non_lowbit["source_tag"] == "full_disc"].index.tolist())
-    dirty_ai_indices = set(non_lowbit[non_lowbit["source_tag"].isin(["dirtyhippie", "ai_upscale"])].index.tolist())
-
-    if full_disc_indices and dirty_ai_indices and best_technical is not None:
-        best_full_disc = _rank_indices(cluster, full_disc_indices)[0]
-        best_dirty_ai = _rank_indices(cluster, dirty_ai_indices)[0]
-        return {best_full_disc, best_dirty_ai, best_technical}
-
     if special_keepers:
-        keep_indices.add(_rank_indices(cluster, special_keepers)[0])
-        if best_technical is not None:
+        keep_indices = {_rank_indices(cluster, special_keepers)[0]}
+        if best_technical is not None and best_technical not in keep_indices:
             keep_indices.add(best_technical)
-    if len(keep_indices) > 2:
-        specials = [idx for idx in keep_indices if str(cluster.loc[idx, "source_tag"]) in special_tags]
-        technicals = [idx for idx in keep_indices if idx not in specials]
-        ranked_specials = _rank_indices(cluster, specials) if specials else []
-        ranked_technicals = _rank_indices(cluster, technicals) if technicals else []
-        if ranked_specials and ranked_technicals:
-            keep_indices = {ranked_specials[0], ranked_technicals[0]}
-        elif len(ranked_specials) >= 2 and "full_disc" in {str(cluster.loc[idx, "source_tag"]) for idx in ranked_specials[:2]}:
-            keep_indices = set(ranked_specials[:2])
-        else:
-            keep_indices = set((_rank_indices(cluster, keep_indices))[:2])
-    return keep_indices
+    return set(_rank_indices(cluster, keep_indices)[:2])
 
 
 def analyze_duplicates(
@@ -281,6 +268,7 @@ def analyze_duplicates(
     progress(done_units, total_units, "Normalizzazione titoli e percorsi")
     df["normalized_title"] = df["title_or_series"].map(normalize_text)
     df["normalized_basename"] = df["file"].map(normalized_basename)
+    df["basename"] = df["file"].map(basename)
     log("Calcolo durate...")
     done_units += 1
     progress(done_units, total_units, "Calcolo durate")
@@ -309,7 +297,9 @@ def analyze_duplicates(
     if total_movie_groups == 0:
         done_units = min(done_units + 1, total_units)
         progress(done_units, total_units, "Split gruppi film per durata")
-    duplicate_clusters = [cluster for _, cluster in df.groupby(["group_key", "cluster_index"]) if len(cluster) >= 2]
+    group_sizes = df.groupby("group_key").size()
+    duplicate_group_keys = set(group_sizes[group_sizes >= 2].index.tolist())
+    duplicate_clusters = [cluster for (gk, _), cluster in df.groupby(["group_key", "cluster_index"]) if gk in duplicate_group_keys]
     duplicate_indices: set[int] = set()
     for cluster in duplicate_clusters:
         duplicate_indices.update(cluster.index)
@@ -370,7 +360,7 @@ def analyze_duplicates(
         keep_indices = _choose_keep_indices(cluster, keeper)
         for _, row in cluster.iterrows():
             action = "KEEP" if row.name in keep_indices else "DELETE_SAFE"
-            reason = ["versione tenuta con le regole attuali"] if action == "KEEP" else ["differenze contenute: copia ridondante"]
+            reason = ["versione tenuta con le regole attuali"] if action == "KEEP" else []
             if action != "KEEP":
                 row_video = float(row.get("bitrate_mbps_video") or 0)
                 keeper_video = float(keeper.get("bitrate_mbps_video") or 0)
@@ -397,6 +387,10 @@ def analyze_duplicates(
                 if action == "DELETE_SAFE" and audio_better(row_en, keep_en, "en") and not audio_better(row_it, keep_it, "it") and same_tier:
                     action = "DELETE_PROPOSED"
                     reason = ["vantaggio residuo audio EN sul file da valutare", "resta un vantaggio secondario audio EN"]
+            if len(cluster) == 1 and action == "KEEP":
+                reason = ["durata diversa del film: tengo una versione per ciascun taglio"]
+            if action == "DELETE_SAFE" and not reason:
+                reason = ["differenze contenute: copia ridondante"]
             rows.append({**row.to_dict(), "title_or_episode": row.get("episode_title") or row.get("title_or_series"), "file_path": row.get("file"), "keep_reference": keeper.get("file"), "final_action": action, "reason": " ; ".join(reason)})
     if total_clusters == 0:
         done_units += 1
@@ -420,7 +414,7 @@ def analyze_duplicates(
         f"KEEP: {keep_count}, DELETE_SAFE: {delete_safe_count}, "
         f"DELETE_PROPOSED: {delete_proposed_count}, REVIEW_MANUAL: {manual_count}"
     )
-    summary = pd.DataFrame({"metrica":["policy_version","policy_coverage_note","inventory_file","generated_at","total_rows","duplicate_groups","keep_count","delete_safe_count","delete_proposed_count","manual_count","conserva_count","debug_streams_used","debug_xml_used"],"valore":[POLICY_VERSION,"prima integrazione: alcune regole avanzate ancora parziali",str(inventory_path),datetime.now().isoformat(timespec="seconds"),len(df),dup_groups,keep_count,delete_safe_count,delete_proposed_count,manual_count,keep_count,wb.debug_streams is not None,wb.debug_xml is not None]})
+    summary = pd.DataFrame({"metrica":["policy_version","policy_coverage_note","inventory_file","generated_at","total_rows","duplicate_groups","keep_count","delete_safe_count","delete_proposed_count","manual_count","conserva_count","debug_streams_used","debug_xml_used"],"valore":[POLICY_VERSION,"prima integrazione: alcune regole avanzate ancora parziali",str(inventory_path),datetime.now().isoformat(timespec="seconds"),len(df),dup_groups,keep_count,delete_safe_count,delete_proposed_count,manual_count,int((out_df["group_status"]=="CONSERVA").sum()) if not out_df.empty else 0,wb.debug_streams is not None,wb.debug_xml is not None]})
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"report_duplicati_plex_classificato_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     log("Scrittura workbook finale...")

@@ -292,10 +292,11 @@ def test_full_disc_dirtyhippie_and_best_technical_are_all_kept(tmp_path: Path):
     out = analyze_duplicates(p, tmp_path)
     all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
     kept = all_df[all_df["final_action"] == "KEEP"]["file_path"].tolist()
-    dirty_row = all_df[all_df["file_path"] == "/dirtyhippie.mkv"].iloc[0]
-    assert dirty_row["final_action"] != "DELETE_SAFE"
     assert "/full_disc.m2ts" in kept
-    assert len(kept) <= 2
+    assert "/dirtyhippie.mkv" in kept
+    assert "/best_technical.mkv" in kept
+    assert (all_df["group_status"] == "CONSERVA").all()
+    assert "REVIEW_MANUAL" not in set(all_df["final_action"])
 
 
 def test_multiple_specials_without_full_disc_combo_still_limited(tmp_path: Path):

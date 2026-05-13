@@ -283,10 +283,10 @@ def _choose_keep_indices(cluster: pd.DataFrame, keeper: pd.Series) -> set[int]:
     full_disc_indices = set(non_lowbit[non_lowbit["source_tag"] == "full_disc"].index.tolist())
     dirty_ai_indices = set(non_lowbit[non_lowbit["source_tag"].isin(["dirtyhippie", "ai_upscale"])].index.tolist())
 
-    if full_disc_indices and dirty_ai_indices:
+    if full_disc_indices and dirty_ai_indices and best_technical is not None:
         best_full_disc = _rank_indices(cluster, full_disc_indices)[0]
         best_dirty_ai = _rank_indices(cluster, dirty_ai_indices)[0]
-        return {best_full_disc, best_dirty_ai}
+        return {best_full_disc, best_dirty_ai, best_technical}
 
     if special_keepers:
         keep_indices.add(_rank_indices(cluster, special_keepers)[0])
@@ -413,11 +413,7 @@ def analyze_duplicates(
         cluster["lowbit4k_penalized"] = cluster.apply(lambda r: lowbit4k_penalty(str(r.get("type", "")).lower()=="movie", int(r["resolution_rank"]), float(r.get("bitrate_mbps_video") or 0), bool(has_good_1080)), axis=1)
         keeper = choose_primary_keeper(cluster)
         keep_indices = _choose_keep_indices(cluster, keeper)
-        # cap hard: max 2 keep per cluster
-        if len(keep_indices) > 2:
-            keep_indices = set(_rank_indices(cluster, keep_indices)[:2])
 
-        cluster_manual = False
         for idx, row in cluster.iterrows():
             action = "KEEP" if idx in keep_indices else "DELETE_SAFE"
             reason = ReasonBuilder.build_keep_reason() if action == "KEEP" else ""
@@ -436,7 +432,6 @@ def analyze_duplicates(
                     reason = f"regola 2160p: {ReasonBuilder.format_video_label(row)} sotto 12 Mbps con 1080p valida presente ; confronto keeper: {ReasonBuilder.format_video_label(keeper)}"
                 elif video_similar and audio_better(row_it, keep_it, "it"):
                     action = "REVIEW_MANUAL"
-                    cluster_manual = True
                     reason = f"video simile: {ReasonBuilder.format_video_label(row)} ≈ {ReasonBuilder.format_video_label(keeper)} ; audio IT migliore sul file da valutare: {ReasonBuilder.format_audio_it_label(row)} > {ReasonBuilder.format_audio_it_label(keeper)} ; vantaggi incrociati: video vs audio/sorgente"
                 elif video_similar and audio_better(row_en, keep_en, "en") and (not audio_better(row_it, keep_it, "it")):
                     action = "DELETE_PROPOSED"

@@ -421,3 +421,27 @@ def test_manual_dettaglio_contains_keep_stimato(tmp_path: Path):
     man = pd.read_excel(out, sheet_name="MANUALE_DETTAGLIO")
     if not man.empty:
         assert "KEEP_STIMATO" in set(man["manual_role"])
+
+
+def test_reason_formatting_with_nan_bitrate_does_not_emit_nan(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/k.mkv", rating_key="1", bitrate_mbps_video=12.0),
+        make_row(file="/c.mkv", rating_key="2", bitrate_mbps_video=float("nan"), audio_it_bitrate_mbps=float("nan")),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    reason = str(all_df[all_df["final_action"] != "KEEP"].iloc[0]["reason"]).lower()
+    assert "nan mbps" not in reason
+    assert "nan kbps" not in reason
+
+def test_reason_formatting_with_nan_text_fields_does_not_emit_nan(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/k.mkv", rating_key="1", hdr="SDR", resolution="1080p", audio_it_quality="DD 5.1"),
+        make_row(file="/c.mkv", rating_key="2", hdr=float("nan"), resolution=float("nan"), audio_it_quality=float("nan"), bitrate_mbps_video=8.0),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    reason = str(all_df[all_df["final_action"] != "KEEP"].iloc[0]["reason"]).lower()
+    assert "nan" not in reason

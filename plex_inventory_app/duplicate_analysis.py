@@ -17,38 +17,56 @@ from .duplicate_report_writer import write_duplicate_report
 
 
 class ReasonBuilder:
+
+    @staticmethod
+    def _clean_text(value: object) -> str:
+        if value is None:
+            return ""
+        try:
+            if pd.isna(value):
+                return ""
+        except Exception:
+            pass
+        text = str(value).strip()
+        return "" if text.lower() in {"nan", "none", "null"} else text
     @staticmethod
     def _fmt_video_bitrate(value: object) -> str:
         try:
-            return f"{float(value):.3f} Mbps"
+            parsed = float(value)
+            if math.isnan(parsed):
+                return "n/d"
+            return f"{parsed:.3f} Mbps"
         except (TypeError, ValueError):
             return "n/d"
 
     @staticmethod
     def _fmt_audio_kbps(value: object) -> str:
         try:
-            return f"{int(round(float(value) * 1000.0))} kbps"
+            parsed = float(value)
+            if math.isnan(parsed):
+                return "n/d"
+            return f"{int(round(parsed * 1000.0))} kbps"
         except (TypeError, ValueError):
             return "n/d"
 
     @staticmethod
     def format_video_label(row: pd.Series) -> str:
-        codec = str(row.get("videoCodec") or "").strip()
-        res = str(row.get("resolution") or "").strip()
-        hdr = str(row.get("hdr") or "SDR").strip()
+        codec = ReasonBuilder._clean_text(row.get("videoCodec"))
+        res = ReasonBuilder._clean_text(row.get("resolution"))
+        hdr = ReasonBuilder._clean_text(row.get("hdr")) or "SDR"
         bitrate = ReasonBuilder._fmt_video_bitrate(row.get("bitrate_mbps_video"))
         parts = [x for x in [codec, res, hdr, bitrate] if x]
         return " ".join(parts)
 
     @staticmethod
     def format_audio_it_label(row: pd.Series) -> str:
-        quality = str(row.get("audio_it_quality") or "").strip()
+        quality = ReasonBuilder._clean_text(row.get("audio_it_quality"))
         bitrate = ReasonBuilder._fmt_audio_kbps(row.get("audio_it_bitrate_mbps"))
         return " ".join([x for x in [quality, bitrate] if x]).strip()
 
     @staticmethod
     def format_audio_en_label(row: pd.Series) -> str:
-        quality = str(row.get("audio_en_quality") or "").strip()
+        quality = ReasonBuilder._clean_text(row.get("audio_en_quality"))
         bitrate = ReasonBuilder._fmt_audio_kbps(row.get("audio_en_bitrate_mbps"))
         return " ".join([x for x in [quality, bitrate] if x]).strip()
 

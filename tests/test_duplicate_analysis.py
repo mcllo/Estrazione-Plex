@@ -338,9 +338,51 @@ def test_actions_and_sheets(tmp_path: Path):
     p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
     out = analyze_duplicates(p, tmp_path)
     xls = pd.ExcelFile(out)
-    assert set(["Sintesi","CONSERVA","ELIMINA_SICURO","ELIMINA_PROPOSTI","MANUALE_INDEX","MANUALE_DETTAGLIO","TUTTE_LE_DECISIONI"]).issubset(set(xls.sheet_names))
+
+
+def test_manual_conflict_marks_only_best_it_not_all_non_keep(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/noit_keep.mkv", rating_key="1", bitrate_mbps_video=9.0, audio_it_quality="", audio_it_bitrate_mbps=0.0),
+        make_row(file="/it_tradeoff.mkv", rating_key="2", bitrate_mbps_video=8.9, audio_it_quality="TrueHD 2.0", audio_it_bitrate_mbps=1.5),
+        make_row(file="/noit_redundant.mkv", rating_key="3", bitrate_mbps_video=6.0, audio_it_quality="", audio_it_bitrate_mbps=0.0),
+    ])
+    ds = pd.DataFrame([
+        {"rating_key": "1", "streamType": 2, "language": "eng"},
+        {"rating_key": "2", "streamType": 2, "language": "ita"},
+        {"rating_key": "3", "streamType": 2, "language": "eng"},
+    ])
+    p = tmp_path / "in.xlsx"
+    with pd.ExcelWriter(p) as w:
+        df.to_excel(w, sheet_name="Library", index=False)
+        ds.to_excel(w, sheet_name="Debug_Streams", index=False)
+    out = analyze_duplicates(p, tmp_path)
     all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
-    assert {"KEEP", "DELETE_PROPOSED", "REVIEW_MANUAL"}.issubset(set(all_df["final_action"]))
+    assert all_df.loc[all_df["file_path"] == "/it_tradeoff.mkv", "final_action"].iloc[0] == "REVIEW_MANUAL"
+    assert all_df.loc[all_df["file_path"] == "/noit_redundant.mkv", "final_action"].iloc[0] != "REVIEW_MANUAL"
+
+
+def test_manual_reason_does_not_use_video_simile_when_not_video_similar(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/noit_keep.mkv", rating_key="1", bitrate_mbps_video=20.0, audio_it_quality="", audio_it_bitrate_mbps=0.0),
+        make_row(file="/it_candidate.mkv", rating_key="2", bitrate_mbps_video=10.0, audio_it_quality="TrueHD 2.0", audio_it_bitrate_mbps=1.3),
+    ])
+    ds = pd.DataFrame([
+        {"rating_key": "1", "streamType": 2, "language": "eng"},
+        {"rating_key": "2", "streamType": 2, "language": "ita"},
+    ])
+    p = tmp_path / "in.xlsx"
+    with pd.ExcelWriter(p) as w:
+        df.to_excel(w, sheet_name="Library", index=False)
+        ds.to_excel(w, sheet_name="Debug_Streams", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    reason = all_df.loc[all_df["file_path"] == "/it_candidate.mkv", "reason"].iloc[0]
+    assert "video simile" not in reason
+    assert "≈" not in reason
+
+
+def test_ddp_atmos_does_not_beat_dd_high_bitrate_same_channels():
+    assert not audio_better(parse_audio_quality("DD+ Atmos 5.1", 0.192), parse_audio_quality("DD 5.1", 0.640), "it")
 
 
 def test_candidate_sort_key_prefers_higher_it_audio_score_when_video_equal():

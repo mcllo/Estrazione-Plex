@@ -227,7 +227,7 @@ def audio_better(candidate: AudioScore, reference: AudioScore, language: str = "
     if candidate.codec_family == "lossy" and reference.codec_family == "lossy":
         if (candidate.channels == reference.channels or candidate.broad_tier == reference.broad_tier) and (candidate.bitrate * 1000.0) < 0.5 * (reference.bitrate * 1000.0):
             return False
-    if candidate.codec_key == "ddp" and reference.codec_key == "dd" and candidate.channels == reference.channels:
+    if candidate.codec_key in {"ddp", "ddp_atmos"} and reference.codec_key in {"dd", "dd_atmos"} and candidate.channels == reference.channels:
         if (candidate.bitrate * 1000.0) * 2.0 <= (reference.bitrate * 1000.0):
             return False
     threshold = 0.35 if language == "it" else 0.25

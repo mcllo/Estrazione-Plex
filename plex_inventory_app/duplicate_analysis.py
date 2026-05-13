@@ -327,8 +327,8 @@ def find_manual_conflict_indices(cluster: pd.DataFrame, keep_indices: set[int]) 
     if best_it["source_tag"] in {"full_disc", "dirtyhippie", "ai_upscale"} or best_noit["source_tag"] in {"full_disc", "dirtyhippie", "ai_upscale"}:
         return set()
     same_tier = int(best_it["resolution_rank"]) == int(best_noit["resolution_rank"]) and int(best_it["hdr_rank"]) == int(best_noit["hdr_rank"])
-    if same_tier and best_it.name not in keep_indices:
-        return {idx for idx in cluster.index if idx not in keep_indices}
+    if same_tier and video_similar(best_it, best_noit) and best_it.name not in keep_indices:
+        return {best_it.name}
     return set()
 
 
@@ -462,7 +462,10 @@ def analyze_duplicates(
                     reason = f"regola 2160p: {ReasonBuilder.format_video_label(row)} sotto 12 Mbps con 1080p valida presente ; confronto keeper: {ReasonBuilder.format_video_label(keeper)}"
                 elif idx in manual_conflict_indices:
                     action = "REVIEW_MANUAL"
-                    reason = f"video simile: {ReasonBuilder.format_video_label(row)} ≈ {ReasonBuilder.format_video_label(keeper)} ; audio IT migliore sul file da valutare: {ReasonBuilder.format_audio_it_label(row)} > {ReasonBuilder.format_audio_it_label(keeper)} ; vantaggi incrociati: video vs audio/sorgente"
+                    if video_similar(row, keeper):
+                        reason = f"video simile: {ReasonBuilder.format_video_label(row)} ≈ {ReasonBuilder.format_video_label(keeper)} ; audio IT migliore sul file da valutare: {ReasonBuilder.format_audio_it_label(row)} > {ReasonBuilder.format_audio_it_label(keeper)} ; vantaggi incrociati: video vs audio/sorgente"
+                    else:
+                        reason = f"video diverso: {ReasonBuilder.format_video_label(row)} vs {ReasonBuilder.format_video_label(keeper)} ; audio IT migliore sul file da valutare: {ReasonBuilder.format_audio_it_label(row)} > {ReasonBuilder.format_audio_it_label(keeper)} ; trade-off reale da verificare manualmente"
                 elif row.get("source_tag") in {"dirtyhippie", "ai_upscale"} and not bool(row.get("lowbit4k_penalized")):
                     action = "REVIEW_MANUAL"
                     reason = "fonte speciale non penalizzata: richiede validazione manuale prima di eliminare"

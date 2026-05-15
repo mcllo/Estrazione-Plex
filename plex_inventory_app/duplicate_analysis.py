@@ -115,9 +115,9 @@ class InventoryWorkbook:
 
 def _parse_duration_seconds(value: str) -> int:
     if not isinstance(value, str) or ":" not in value:
-        return 0
+        return -1
     p = [int(x) for x in value.split(":")]
-    return p[0] * 3600 + p[1] * 60 + p[2] if len(p) == 3 else 0
+    return p[0] * 3600 + p[1] * 60 + p[2] if len(p) == 3 else -1
 
 
 def load_inventory_workbook(path: Path, log_callback: Callable[[str], None] | None = None) -> InventoryWorkbook:
@@ -243,15 +243,22 @@ def detect_italian_audio_state(row: pd.Series, ds: pd.DataFrame | None, dx: pd.D
     return "unknown"
 
 def _duration_cluster_movie(group: pd.DataFrame) -> pd.Series:
-    d = group["duration_seconds"].fillna(0).astype(int).sort_values()
-    cluster = {}
+    known = group[group["duration_seconds"].fillna(-1).astype(int) >= 0]["duration_seconds"].astype(int).sort_values()
+    unknown_indices = group[group["duration_seconds"].fillna(-1).astype(int) < 0].index.tolist()
+    cluster: dict[int, int] = {}
     idx = 0
-    prev = None
-    for i, sec in d.items():
-        if prev is not None and abs(sec - prev) >= 60:
+    anchor = None
+    for i, sec in known.items():
+        if anchor is None:
+            anchor = sec
+        elif abs(sec - anchor) >= 60:
             idx += 1
+            anchor = sec
         cluster[i] = idx
-        prev = sec
+    if unknown_indices:
+        idx += 1
+        for i in unknown_indices:
+            cluster[i] = idx
     return pd.Series(cluster)
 
 
@@ -294,25 +301,20 @@ def _best_technical_keeper(cluster: pd.DataFrame) -> int | None:
 
 
 def _choose_keep_indices(cluster: pd.DataFrame, keeper: pd.Series) -> set[int]:
-    keep_indices: set[int] = {keeper.name}
-    special_keepers = _allowed_special_keepers(cluster)
-    best_technical = _best_technical_keeper(cluster)
+    keep_indices: set[int] = set()
     non_lowbit = cluster[~cluster["lowbit4k_penalized"]]
     full_disc_indices = set(non_lowbit[non_lowbit["source_tag"] == "full_disc"].index.tolist())
     dirty_ai_indices = set(non_lowbit[non_lowbit["source_tag"].isin(["dirtyhippie", "ai_upscale"])].index.tolist())
-
-    if full_disc_indices and dirty_ai_indices and best_technical is not None:
-        best_full_disc = _rank_indices(cluster, full_disc_indices)[0]
-        best_dirty_ai = _rank_indices(cluster, dirty_ai_indices)[0]
-        return {best_full_disc, best_dirty_ai, best_technical}
-
-    if special_keepers:
-        keep_indices.add(_rank_indices(cluster, special_keepers)[0])
-        if best_technical is not None:
-            keep_indices.add(best_technical)
-    if len(keep_indices) > 2:
-        keep_indices = set(_rank_indices(cluster, keep_indices)[:2])
-    return keep_indices
+    best_technical = _best_technical_keeper(cluster)
+    if full_disc_indices:
+        keep_indices.add(_rank_indices(cluster, full_disc_indices)[0])
+    if dirty_ai_indices:
+        keep_indices.add(_rank_indices(cluster, dirty_ai_indices)[0])
+    if best_technical is not None:
+        keep_indices.add(best_technical)
+    if not keep_indices:
+        keep_indices = {keeper.name}
+    return set(_rank_indices(cluster, keep_indices)[:3])
 
 
 def find_manual_conflict_indices(cluster: pd.DataFrame, keep_indices: set[int]) -> set[int]:
@@ -327,7 +329,7 @@ def find_manual_conflict_indices(cluster: pd.DataFrame, keep_indices: set[int]) 
     if best_it["source_tag"] in {"full_disc", "dirtyhippie", "ai_upscale"} or best_noit["source_tag"] in {"full_disc", "dirtyhippie", "ai_upscale"}:
         return set()
     same_tier = int(best_it["resolution_rank"]) == int(best_noit["resolution_rank"]) and int(best_it["hdr_rank"]) == int(best_noit["hdr_rank"])
-    if same_tier and video_similar(best_it, best_noit) and best_it.name not in keep_indices:
+    if same_tier and best_it.name not in keep_indices:
         return {best_it.name}
     return set()
 
@@ -466,9 +468,6 @@ def analyze_duplicates(
                         reason = f"video simile: {ReasonBuilder.format_video_label(row)} ≈ {ReasonBuilder.format_video_label(keeper)} ; audio IT migliore sul file da valutare: {ReasonBuilder.format_audio_it_label(row)} > {ReasonBuilder.format_audio_it_label(keeper)} ; vantaggi incrociati: video vs audio/sorgente"
                     else:
                         reason = f"video diverso: {ReasonBuilder.format_video_label(row)} vs {ReasonBuilder.format_video_label(keeper)} ; audio IT migliore sul file da valutare: {ReasonBuilder.format_audio_it_label(row)} > {ReasonBuilder.format_audio_it_label(keeper)} ; trade-off reale da verificare manualmente"
-                elif row.get("source_tag") in {"dirtyhippie", "ai_upscale"} and not bool(row.get("lowbit4k_penalized")):
-                    action = "REVIEW_MANUAL"
-                    reason = "fonte speciale non penalizzata: richiede validazione manuale prima di eliminare"
                 elif video_similar(row, keeper) and audio_better(row_it, keep_it, "it"):
                     action = "REVIEW_MANUAL"
                     reason = f"video simile: {ReasonBuilder.format_video_label(row)} ≈ {ReasonBuilder.format_video_label(keeper)} ; audio IT migliore sul file da valutare: {ReasonBuilder.format_audio_it_label(row)} > {ReasonBuilder.format_audio_it_label(keeper)} ; vantaggi incrociati: video vs audio/sorgente"
@@ -486,6 +485,19 @@ def analyze_duplicates(
                     reason = " ; ".join(clauses) if clauses else "differenze contenute: copia ridondante"
 
             rows.append({**row.to_dict(), "title_or_episode": row.get("episode_title") or row.get("title_or_series"), "file_path": row.get("file"), "keep_reference": keeper.get("file"), "final_action": action, "reason": reason})
+
+        # guard: unica copia con audio italiano confermato non va in auto-delete
+        keep_has_confirmed_it = any(
+            r["final_action"] == "KEEP" and str(r.get("italian_audio_state", "")).lower() == "yes"
+            for r in rows if r["group_key"] == cluster.iloc[0]["group_key"] and r["cluster_index"] == cluster.iloc[0]["cluster_index"]
+        )
+        if not keep_has_confirmed_it:
+            for r in rows:
+                if r["group_key"] != cluster.iloc[0]["group_key"] or r["cluster_index"] != cluster.iloc[0]["cluster_index"]:
+                    continue
+                if r["final_action"] in {"DELETE_SAFE", "DELETE_PROPOSED"} and str(r.get("italian_audio_state", "")).lower() == "yes":
+                    r["final_action"] = "REVIEW_MANUAL"
+                    r["reason"] = "manuale: riga con audio IT confermato, nessun KEEP nello stesso cluster conserva audio italiano confermato"
 
         cluster_rows = [r for r in rows if r["group_key"] == cluster.iloc[0]["group_key"] and r["cluster_index"] == cluster.iloc[0]["cluster_index"]]
         if len(cluster_rows) == 1 and cluster_rows[0]["final_action"] == "KEEP":
@@ -515,7 +527,7 @@ def analyze_duplicates(
         f"KEEP: {keep_count}, DELETE_SAFE: {delete_safe_count}, "
         f"DELETE_PROPOSED: {delete_proposed_count}, REVIEW_MANUAL: {manual_count}"
     )
-    summary = pd.DataFrame({"metrica":["policy_version","policy_coverage_note","inventory_file","generated_at","total_rows","duplicate_groups","keep_count","delete_safe_count","delete_proposed_count","manual_count","conserva_count","debug_streams_used","debug_xml_used"],"valore":[POLICY_VERSION,"prima integrazione: alcune regole avanzate ancora parziali",str(inventory_path),datetime.now().isoformat(timespec="seconds"),len(df),dup_groups,keep_count,delete_safe_count,delete_proposed_count,manual_count,(out_df.drop_duplicates(["group_key", "cluster_index"]).query("group_status == 'CONSERVA'").shape[0] if not out_df.empty else 0),wb.debug_streams is not None,wb.debug_xml is not None]})
+    summary = pd.DataFrame({"metrica":["policy_version","policy_coverage_note","inventory_file","generated_at","total_rows","duplicate_groups","keep_count","delete_safe_count","delete_proposed_count","manual_count","conserva_count","debug_streams_used","debug_xml_used"],"valore":[POLICY_VERSION,"policy v2 concise rewrite: workflow deterministico con audio IT guard e reason tecniche",str(inventory_path),datetime.now().isoformat(timespec="seconds"),len(df),dup_groups,keep_count,delete_safe_count,delete_proposed_count,manual_count,(out_df.drop_duplicates(["group_key", "cluster_index"]).query("group_status == 'CONSERVA'").shape[0] if not out_df.empty else 0),wb.debug_streams is not None,wb.debug_xml is not None]})
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"report_duplicati_plex_classificato_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     log("Scrittura workbook finale...")

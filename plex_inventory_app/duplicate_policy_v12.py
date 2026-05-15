@@ -6,7 +6,7 @@ import math
 import re
 from typing import Literal
 
-POLICY_VERSION = "v12_normative_general_policy_tv_year_fix_audio_engineering"
+POLICY_VERSION = "v12_concise_rewrite_audio_it_guard_minimal_deterministic_reason_details_duration_details_symbolic_keep_details"
 
 RESOLUTION_RANK = {"2160": 2160, "4k": 2160, "1080": 1080, "720": 720, "576": 576, "480": 480, "sd": 360}
 HDR_RANK = {"": 0, "sdr": 0, "hdr": 1, "hdr10": 2, "hdr10+": 3, "dolby vision": 4, "dv": 4, "hlg": 1}

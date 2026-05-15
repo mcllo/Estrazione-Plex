@@ -515,3 +515,33 @@ def test_multicut_with_manual_cluster_keeps_manual_priority_and_excludes_from_co
     manual_dett = pd.read_excel(out, sheet_name="MANUALE_DETTAGLIO")
     assert (manual_index["group_key"] == manual_cluster["group_key"]).any()
     assert ((manual_dett["group_key"] == manual_cluster["group_key"]) & (manual_dett["cluster_index"] == manual_cluster["cluster_index"])).any()
+
+def test_duration_cluster_anchor_not_prev(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(duration_hms="00:00:00", file="/a.mkv", rating_key="1"),
+        make_row(duration_hms="00:00:50", file="/b.mkv", rating_key="2"),
+        make_row(duration_hms="00:01:40", file="/c.mkv", rating_key="3"),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    assert all_df[all_df["file_path"] == "/a.mkv"]["cluster_index"].iloc[0] == all_df[all_df["file_path"] == "/b.mkv"]["cluster_index"].iloc[0]
+    assert all_df[all_df["file_path"] == "/c.mkv"]["cluster_index"].iloc[0] != all_df[all_df["file_path"] == "/a.mkv"]["cluster_index"].iloc[0]
+
+
+def test_audio_it_guard_promotes_to_manual(tmp_path: Path):
+    df = pd.DataFrame([
+        make_row(file="/best_noit.mkv", rating_key="1", audio_it_quality="", audio_it_bitrate_mbps=0.0, audio_en_quality="DD 5.1", audio_en_bitrate_mbps=0.2, bitrate_mbps_video=8.0),
+        make_row(file="/it_only.mkv", rating_key="2", audio_it_quality="DD 5.1", audio_it_bitrate_mbps=0.4, audio_en_quality="DD 5.1", audio_en_bitrate_mbps=0.1, bitrate_mbps_video=7.9),
+    ])
+    p = tmp_path / "in.xlsx"; df.to_excel(p, sheet_name="Library", index=False)
+    ds = pd.DataFrame([
+        {"rating_key": "1", "streamType": 2, "language": "eng"},
+        {"rating_key": "2", "streamType": 2, "language": "ita"},
+    ])
+    with pd.ExcelWriter(p, mode="a", engine="openpyxl", if_sheet_exists="overlay") as w:
+        ds.to_excel(w, sheet_name="Debug_Streams", index=False)
+    out = analyze_duplicates(p, tmp_path)
+    all_df = pd.read_excel(out, sheet_name="TUTTE_LE_DECISIONI")
+    row = all_df[all_df["file_path"] == "/it_only.mkv"].iloc[0]
+    assert row["final_action"] == "REVIEW_MANUAL"

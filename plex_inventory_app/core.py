@@ -312,7 +312,7 @@ def with_timestamp(path_str: str, fmt: str = TIMESTAMP_FMT, tz=TZ_MILAN) -> str:
     return str(p.with_name(f"{p.stem}_{ts}{p.suffix}"))
 
 
-def build_output_columns(output_profile: str, duration_output: str) -> list[str]:
+def build_output_columns(output_profile: str, duration_output: str, include_audit: bool = False) -> list[str]:
     full = [
         "type", "title_or_series", "season", "episode", "episode_title", "year",
         "added_at_milan", "resolution", "hdr", "videoCodec", "container",
@@ -330,7 +330,17 @@ def build_output_columns(output_profile: str, duration_output: str) -> list[str]
         "audio_it_bitrate_mbps", "audio_it_quality", "audio_en_bitrate_mbps", "audio_en_quality",
         "size_gib", "imdb_id", "imdb_rating", "tmdb_id", "rating_key", "genres", "file",
     ]
-    target = full if output_profile == "FULL" else slim
+    if include_audit:
+        full += [
+            "media_id", "part_id", "part_match_source", "resolution_source", "duration_source",
+            "bitrate_total_calc_mbps", "bitrate_total_xml_mbps", "bitrate_total_xml_rejected_reason",
+            "bitrate_video_source",
+        ]
+    target = full if output_profile == "FULL" else slim + ([
+        "media_id", "part_id", "part_match_source", "resolution_source", "duration_source",
+        "bitrate_total_source", "bitrate_total_calc_mbps", "bitrate_total_xml_mbps", "bitrate_total_xml_rejected_reason",
+        "bitrate_video_source",
+    ] if include_audit and output_profile != "FULL" else [])
     marker = "bitrate_mbps_total"
     idx = target.index(marker)
     if duration_output == "BOTH":
@@ -412,7 +422,11 @@ class InventoryRunner:
         self.baseurl: Optional[str] = None
         self.plex_http_sem = threading.BoundedSemaphore(1)
 
-        self.output_columns = build_output_columns(self.config.output_profile, self.config.duration_output)
+        self.output_columns = build_output_columns(
+            self.config.output_profile,
+            self.config.duration_output,
+            include_audit=(self.config.output_profile == "FULL" or self.config.debug),
+        )
 
     def run(self) -> InventoryResult:
         t0 = time.time()
@@ -591,6 +605,38 @@ class InventoryRunner:
         if s in ("sd",):
             return "SD"
         return s.upper() if s else ""
+
+    def detect_resolution(self, item=None, media=None, part=None):
+        v_streams = self.get_video_streams(item, part) if (item is not None and part is not None) else []
+        primary = self.select_primary_video_stream(v_streams)
+        h = self.get_int(primary, "height", None) or self.get_int(primary, "codedHeight", None)
+        if h and h > 0:
+            if h >= 2000:
+                return "2160p", "stream_height"
+            if h >= 1400:
+                return "1440p", "stream_height"
+            if h >= 1000:
+                return "1080p", "stream_height"
+            if h >= 700:
+                return "720p", "stream_height"
+            return "SD", "stream_height"
+        mh = getattr(media, "height", None)
+        try:
+            mh = int(mh) if mh is not None else None
+        except Exception:
+            mh = None
+        if mh and mh > 0:
+            if mh >= 2000:
+                return "2160p", "media_height"
+            if mh >= 1400:
+                return "1440p", "media_height"
+            if mh >= 1000:
+                return "1080p", "media_height"
+            if mh >= 700:
+                return "720p", "media_height"
+            return "SD", "media_height"
+        nr = self.norm_res(media)
+        return (nr, "media_videoResolution") if nr else ("", "unknown")
 
     @staticmethod
     def kbps_to_mbps(x):
@@ -801,7 +847,7 @@ class InventoryRunner:
                         continue
                     bundle["parts"][key] = {"media": md_attrib, "part": prt_attrib, "streams": streams}
                     if pfile:
-                        bundle["by_file"][pfile] = key
+                        bundle["by_file"].setdefault(pfile, []).append(key)
                     if pbase:
                         bundle["by_base"].setdefault(pbase, []).append(key)
         except Exception:
@@ -835,23 +881,55 @@ class InventoryRunner:
         self.log(f"[WARN] XML non letto per {getattr(item, 'title', '')}: {last_error!r}")
         return None
 
-    def find_part_info_from_bundle(self, item, part):
+    def _xml_match_score(self, info, media, part):
+        score = 0
+        part_xml = (info or {}).get("part", {}) or {}
+        media_xml = (info or {}).get("media", {}) or {}
+        if str(part_xml.get("key") or "") and str(part_xml.get("key")) == str(getattr(part, "key", "") or ""):
+            score += 4
+        if str(media_xml.get("id") or "") and str(media_xml.get("id")) == str(getattr(media, "id", "") or ""):
+            score += 4
+        for attr, pts in (("size", 3), ("duration", 3), ("container", 2)):
+            xml_v = part_xml.get(attr) or media_xml.get(attr)
+            plex_v = getattr(part, attr, None) if hasattr(part, attr) else getattr(media, attr, None)
+            if xml_v is not None and plex_v is not None and str(xml_v) == str(plex_v):
+                score += pts
+        return score
+
+    def find_part_info_from_bundle(self, item, part, return_source=False):
         bundle = self.fetch_item_xml_bundle(item)
         if not bundle:
-            return None
+            return (None, "xml_missing") if return_source else None
         pid = str(getattr(part, "id", "") or "")
         pfile = getattr(part, "file", "") or ""
         pbase = os.path.basename(pfile) if pfile else ""
+        media = getattr(part, "_parent", None)
         if pid and pid in bundle["parts"]:
-            return bundle["parts"][pid]
+            out = bundle["parts"][pid]
+            return (out, "xml_part_id") if return_source else out
         if pfile and pfile in bundle["by_file"]:
-            return bundle["parts"].get(bundle["by_file"][pfile])
+            keys = bundle["by_file"].get(pfile) or []
+            if len(keys) == 1:
+                out = bundle["parts"].get(keys[0])
+                return (out, "xml_file_unique") if return_source else out
+            if len(keys) > 1:
+                scored = []
+                for k in keys:
+                    info = bundle["parts"].get(k)
+                    if info:
+                        scored.append((self._xml_match_score(info, media, part), info))
+                scored = sorted(scored, key=lambda x: x[0], reverse=True)
+                if scored and len(scored) == 1 or (len(scored) > 1 and scored[0][0] > 0 and scored[0][0] > scored[1][0]):
+                    out = scored[0][1]
+                    return (out, "xml_file_disambiguated") if return_source else out
+                return (None, "xml_ambiguous") if return_source else None
         if pbase and pbase in bundle["by_base"]:
-            for key in bundle["by_base"][pbase]:
-                info = bundle["parts"].get(key)
-                if info:
-                    return info
-        return None
+            keys = bundle["by_base"].get(pbase) or []
+            if len(keys) == 1:
+                out = bundle["parts"].get(keys[0])
+                return (out, "xml_basename_unique") if return_source else out
+            return (None, "xml_ambiguous") if return_source else None
+        return (None, "xml_missing") if return_source else None
 
     # ---------- Streams ----------
 
@@ -924,8 +1002,8 @@ class InventoryRunner:
             return mbps2
         return None
 
-    def media_total_mbps_via_xml(self, item, part):
-        info = self.find_part_info_from_bundle(item, part)
+    def media_total_mbps_via_xml(self, item, part, xml_info=None):
+        info = xml_info if xml_info is not None else self.find_part_info_from_bundle(item, part)
         if not info:
             return None
         try:
@@ -934,8 +1012,8 @@ class InventoryRunner:
         except Exception:
             return None
 
-    def fetch_video_bitrate_via_xml(self, item, part):
-        info = self.find_part_info_from_bundle(item, part)
+    def fetch_video_bitrate_via_xml(self, item, part, xml_info=None):
+        info = xml_info if xml_info is not None else self.find_part_info_from_bundle(item, part)
         if not info:
             return None
         try:
@@ -1101,31 +1179,36 @@ class InventoryRunner:
 
     # ---------- Duration ----------
 
-    def robust_duration_ms(self, item, media=None, part=None):
+    def robust_duration_ms(self, item, media=None, part=None, xml_info=None, part_match_source="xml_missing"):
         pf = getattr(part, "file", None)
         if pf in self.duration_cache:
             with self.mtx:
                 self.metrics["duration_cache_hit"] += 1
             return self.duration_cache[pf]
-        for src in (getattr(part, "duration", None), getattr(media, "duration", None), getattr(item, "duration", None)):
-            if src and isinstance(src, (int, float)) and src > 60000:
-                self.duration_cache[pf] = int(src)
-                self.duration_source_cache[pf] = "normal"
-                return self.duration_cache[pf]
-        if not self.config.fast_mode:
+        def _ok(d):
             try:
-                info = self.find_part_info_from_bundle(item, part)
-                if info:
-                    for node in (info.get("part", {}), info.get("media", {})):
-                        d = node.get("duration")
-                        if d:
-                            d = int(float(d))
-                            if d > 60000:
-                                self.duration_cache[pf] = d
-                                self.duration_source_cache[pf] = "xml_lookup"
-                                return self.duration_cache[pf]
+                dv = int(float(d))
             except Exception:
-                pass
+                return None
+            if dv <= 0:
+                return None
+            kind = (getattr(item, "type", "") or "").lower()
+            if kind in {"movie", "episode"} and dv < 60000:
+                return None
+            return dv
+        if xml_info and part_match_source in {"xml_part_id", "xml_file_unique", "xml_file_disambiguated", "xml_basename_unique"}:
+            d = _ok((xml_info.get("part", {}) or {}).get("duration"))
+            if d:
+                self.duration_cache[pf] = d; self.duration_source_cache[pf] = "xml_part"; return d
+            d = _ok((xml_info.get("media", {}) or {}).get("duration"))
+            if d:
+                self.duration_cache[pf] = d; self.duration_source_cache[pf] = "xml_media"; return d
+        for src, lbl in ((getattr(part, "duration", None), "plex_part"), (getattr(media, "duration", None), "plex_media"), (getattr(item, "duration", None), "plex_item")):
+            d = _ok(src)
+            if d:
+                self.duration_cache[pf] = d
+                self.duration_source_cache[pf] = lbl
+                return d
         try:
             container = (getattr(part, "container", "") or "").lower()
             if container in {"mpegts", "m2ts", "m2t", "ts"}:
@@ -1140,7 +1223,7 @@ class InventoryRunner:
         except Exception:
             pass
         self.duration_cache[pf] = int(getattr(item, "duration", 0) or 0)
-        self.duration_source_cache[pf] = "fallback_item"
+        self.duration_source_cache[pf] = "fallback_item" if self.duration_cache[pf] else "missing"
         return self.duration_cache[pf]
 
     # ---------- Audio quality ----------
@@ -1404,14 +1487,28 @@ class InventoryRunner:
         mbps = self.media_total_mbps_via_xml(item, part)
         return bool(mbps and mbps >= 30)
 
-    def compute_bitrates_and_size(self, item, media, part, duration_ms):
+    def compute_bitrates_and_size(self, item, media, part, duration_ms, xml_info=None, part_match_source="xml_missing", resolution=""):
         size_bytes = int(getattr(part, "size", 0) or 0)
         size_gib = size_bytes / (1024**3) if size_bytes else None
         dur_s = (duration_ms or 0) / 1000.0
         total_mbps_calc = ((size_bytes * 8.0 / 1_000_000.0) / dur_s) if (size_bytes and dur_s > 0) else None
-        total_mbps_xml = self.media_total_mbps_via_xml(item, part)
-        tot_mbps = total_mbps_xml if (total_mbps_xml and total_mbps_xml > 0) else total_mbps_calc
-        total_source = "xml" if (total_mbps_xml and total_mbps_xml > 0) else "calc"
+        total_mbps_xml = self.media_total_mbps_via_xml(item, part, xml_info=xml_info) if part_match_source in {"xml_part_id", "xml_file_unique", "xml_file_disambiguated", "xml_basename_unique"} else None
+        total_source = "missing"
+        rejected_reason = ""
+        if total_mbps_calc and total_mbps_xml:
+            ratio = total_mbps_xml / max(total_mbps_calc, 1e-9)
+            if total_mbps_xml < 0.5 and total_mbps_calc > 2.0:
+                tot_mbps, total_source, rejected_reason = total_mbps_calc, "calc_xml_rejected", "xml_too_low_vs_calc"
+            elif ratio < 0.25 or ratio > 4.0:
+                tot_mbps, total_source, rejected_reason = total_mbps_calc, "calc_xml_rejected", "xml_calc_ratio_out_of_range"
+            else:
+                tot_mbps, total_source = total_mbps_xml, "xml"
+        elif total_mbps_calc:
+            tot_mbps, total_source = total_mbps_calc, "calc"
+        elif total_mbps_xml:
+            tot_mbps, total_source = total_mbps_xml, "xml_no_calc"
+        else:
+            tot_mbps = None
 
         v_mbps = None
         sec_video_sum = 0.0
@@ -1437,19 +1534,34 @@ class InventoryRunner:
             if am and am > 0:
                 a_total_mbps += am
 
-        if self.config.fast_mode and (v_mbps is None or v_mbps <= 0):
-            xml_vm = self.fetch_video_bitrate_via_xml(item, part)
+        video_source = "missing"
+        if pv and pv > 0:
+            video_source = "stream_xml"
+        elif primary and self.parse_required_bandwidths_first_mbps(self.get_attr(primary, "requiredBandwidths", None)):
+            video_source = "stream_requiredBandwidths"
+        if self.config.fast_mode and (v_mbps is None or v_mbps <= 0) and part_match_source not in {"xml_ambiguous", "xml_missing"}:
+            xml_vm = self.fetch_video_bitrate_via_xml(item, part, xml_info=xml_info)
             if xml_vm and xml_vm > 0:
                 v_mbps = xml_vm
+                video_source = "stream_xml"
 
         n_subs = len(self.get_subtitle_streams(item, part))
         overhead_mbps_raw = self.compute_overhead_mbps(getattr(part, "container", "") or "", len(a_streams), n_subs, tot_mbps_for_cap=tot_mbps)
         v_est_mbps = None
         if (v_mbps is None or v_mbps <= 0) and (tot_mbps is not None):
             v_est_mbps = max(tot_mbps - (a_total_mbps or 0.0) - (sec_video_sum or 0.0) - overhead_mbps_raw, 0.1)
+            video_source = "estimated"
+        if v_mbps and tot_mbps and v_mbps > tot_mbps * 1.10:
+            v_mbps = None
+            video_source = "xml_rejected"
+            v_est_mbps = max(tot_mbps - (a_total_mbps or 0.0) - (sec_video_sum or 0.0) - overhead_mbps_raw, 0.1)
+        if v_mbps and resolution in {"720p", "1080p", "1440p", "2160p"} and v_mbps < 0.1:
+            v_mbps = None
+            video_source = "xml_rejected"
+            v_est_mbps = max((tot_mbps or 0) - (a_total_mbps or 0.0) - (sec_video_sum or 0.0) - overhead_mbps_raw, 0.1) if tot_mbps else None
         return (
             tot_mbps, total_source, v_mbps, v_est_mbps, a_total_mbps, sec_video_sum,
-            size_bytes, size_gib, primary, overhead_mbps_raw, n_subs, len(a_streams),
+            size_bytes, size_gib, primary, overhead_mbps_raw, n_subs, len(a_streams), total_mbps_calc, total_mbps_xml, rejected_reason, video_source,
         )
 
     def add_row_from_part(self, item, media, part, kind):
@@ -1458,10 +1570,11 @@ class InventoryRunner:
                 self.metrics["jobs_done"] += 1
             return
         hdr = self.detect_hdr_robusto(item, media, part)
-        res = self.norm_res(media)
+        part_info, part_match_source = self.find_part_info_from_bundle(item, part, return_source=True)
+        res, resolution_source = self.detect_resolution(item=item, media=media, part=part)
         vcodec = getattr(media, "videoCodec", "") or ""
         container = (getattr(part, "container", "") or "").lower()
-        dur_ms = self.robust_duration_ms(item, media, part)
+        dur_ms = self.robust_duration_ms(item, media, part, xml_info=part_info, part_match_source=part_match_source)
 
         if self.config.skip_short_clips and container in self.CLIP_CONTAINERS:
             dur_s_now = (dur_ms or 0) / 1000.0
@@ -1473,8 +1586,8 @@ class InventoryRunner:
 
         (
             tot_mbps, total_source, v_mbps, v_est_mbps, a_mbps, sec_vid_mbps,
-            size_bytes, size_gib, primary_stream, overhead_mbps_raw, n_subs, n_audio,
-        ) = self.compute_bitrates_and_size(item, media, part, dur_ms)
+            size_bytes, size_gib, primary_stream, overhead_mbps_raw, n_subs, n_audio, total_calc_mbps, total_xml_mbps, total_xml_rej_reason, bitrate_video_source,
+        ) = self.compute_bitrates_and_size(item, media, part, dur_ms, xml_info=part_info, part_match_source=part_match_source, resolution=res)
 
         if self.config.xml_verify_video:
             video_final_tmp = v_mbps if (v_mbps and v_mbps > 0) else v_est_mbps
@@ -1599,6 +1712,15 @@ class InventoryRunner:
             "audio_it_quality": it_lab or "",
             "audio_en_bitrate_mbps": en_br,
             "audio_en_quality": en_lab or "",
+            "media_id": getattr(media, "id", None),
+            "part_id": getattr(part, "id", None),
+            "part_match_source": part_match_source,
+            "resolution_source": resolution_source,
+            "duration_source": self.duration_source_cache.get(getattr(part, "file", None), "missing"),
+            "bitrate_total_calc_mbps": round(total_calc_mbps, 3) if total_calc_mbps is not None else None,
+            "bitrate_total_xml_mbps": round(total_xml_mbps, 3) if total_xml_mbps is not None else None,
+            "bitrate_total_xml_rejected_reason": total_xml_rej_reason or "",
+            "bitrate_video_source": bitrate_video_source,
         }
         row = {k: full_row.get(k, None) for k in self.output_columns}
         with self.mtx:
@@ -1652,8 +1774,16 @@ class InventoryRunner:
             "duration_s": full_row.get("duration_s"),
             "duration_hms": full_row.get("duration_hms"),
             "dbg_duration_source": self.duration_source_cache.get(getattr(part, "file", None), "unknown"),
+            "part_match_source": full_row.get("part_match_source"),
+            "resolution_source": full_row.get("resolution_source"),
+            "duration_source": full_row.get("duration_source"),
             "bitrate_mbps_total": full_row.get("bitrate_mbps_total"),
             "dbg_total_source": total_source,
+            "bitrate_total_source": full_row.get("bitrate_total_source"),
+            "bitrate_total_calc_mbps": full_row.get("bitrate_total_calc_mbps"),
+            "bitrate_total_xml_mbps": full_row.get("bitrate_total_xml_mbps"),
+            "bitrate_total_xml_rejected_reason": full_row.get("bitrate_total_xml_rejected_reason"),
+            "bitrate_video_source": full_row.get("bitrate_video_source"),
             "bitrate_mbps_video_out": full_row.get("bitrate_mbps_video"),
             "dbg_media_bitrate_mbps_xml": round(t_xml, 3) if t_xml else None,
             "dbg_video_bitrate_mbps_xml": round(v_xml, 3) if v_xml else None,
@@ -1662,6 +1792,7 @@ class InventoryRunner:
             "dbg_num_subs": n_subs,
             "dbg_audio_it": full_row.get("audio_it_quality"),
             "dbg_audio_en": full_row.get("audio_en_quality"),
+            "dbg_tv_show_fallback_level": "show" if kind == "TV" else "",
             "dbg_item_attribs_json": self.clip_excel_cell(self.json_dumps_safe(item_dict)),
             "dbg_media_attribs_json": self.clip_excel_cell(self.json_dumps_safe(media_dict)),
             "dbg_part_attribs_json": self.clip_excel_cell(self.json_dumps_safe(part_dict)),

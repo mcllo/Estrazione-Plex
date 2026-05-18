@@ -1222,8 +1222,13 @@ class InventoryRunner:
                         return self.duration_cache[pf]
         except Exception:
             pass
-        self.duration_cache[pf] = int(getattr(item, "duration", 0) or 0)
-        self.duration_source_cache[pf] = "fallback_item" if self.duration_cache[pf] else "missing"
+        fallback = _ok(getattr(item, "duration", None))
+        if fallback:
+            self.duration_cache[pf] = fallback
+            self.duration_source_cache[pf] = "fallback_item"
+            return fallback
+        self.duration_cache[pf] = 0
+        self.duration_source_cache[pf] = "missing"
         return self.duration_cache[pf]
 
     # ---------- Audio quality ----------
@@ -1603,10 +1608,25 @@ class InventoryRunner:
             if (sec_vid_mbps or 0.0) > 0.1:
                 trigger = True
             if trigger:
-                xml_vm2 = self.fetch_video_bitrate_via_xml(item, part)
+                xml_vm2 = None
+                if part_match_source not in {"xml_ambiguous", "xml_missing"}:
+                    xml_vm2 = self.fetch_video_bitrate_via_xml(item, part, xml_info=part_info)
                 if xml_vm2 and xml_vm2 > 0:
-                    v_mbps = xml_vm2
-                    v_est_mbps = None
+                    xml_ok = True
+                    if tot_mbps and xml_vm2 > tot_mbps * 1.10:
+                        xml_ok = False
+                    if res in {"720p", "1080p", "1440p", "2160p"} and xml_vm2 < 0.1:
+                        xml_ok = False
+                    if xml_ok:
+                        v_mbps = xml_vm2
+                        v_est_mbps = None
+                        bitrate_video_source = "stream_xml"
+                    else:
+                        bitrate_video_source = "xml_rejected"
+                        if tot_mbps is not None:
+                            v_est_mbps = max(tot_mbps - (a_mbps or 0.0) - (sec_vid_mbps or 0.0) - (overhead_mbps_raw or 0.0), 0.1)
+                            if v_mbps is None or v_mbps <= 0:
+                                bitrate_video_source = "estimated"
 
         show_meta = self.get_show_meta_for_episode(item) if kind == "TV" else None
         if self.config.run_preset == "FAST_PRECISE":

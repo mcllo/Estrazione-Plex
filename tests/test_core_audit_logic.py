@@ -1,4 +1,5 @@
 import types
+from contextlib import nullcontext
 from plex_inventory_app.core import InventoryRunner, build_output_columns
 
 
@@ -12,7 +13,7 @@ def make_runner():
     r.config = Obj(fast_mode=True)
     r.duration_cache = {}
     r.duration_source_cache = {}
-    r.mtx = types.SimpleNamespace(__enter__=lambda s: None, __exit__=lambda s, a, b, c: False)
+    r.mtx = nullcontext()
     r.metrics = {"duration_cache_hit": 0}
     r.get_attr = InventoryRunner.get_attr
     r.get_int = InventoryRunner.get_int.__get__(r, InventoryRunner)
@@ -71,3 +72,51 @@ def test_slim_columns_stable_and_audit_only_debug_or_full():
     assert "bitrate_total_xml_mbps" not in slim
     slim_dbg = build_output_columns("SLIM_BUDGET", "HMS", include_audit=True)
     assert "bitrate_total_xml_mbps" in slim_dbg
+
+
+def test_duration_short_movie_not_accepted_as_fallback_item():
+    r = make_runner()
+    item = Obj(type="movie", duration=30000)
+    media = Obj(duration=None)
+    part = Obj(file="/short.mkv", duration=None, container="mkv", size=0)
+    r.media_total_mbps_via_xml = lambda *args, **kwargs: None
+    d = InventoryRunner.robust_duration_ms(r, item, media, part, xml_info=None, part_match_source="xml_missing")
+    assert d == 0
+    assert r.duration_source_cache["/short.mkv"] == "missing"
+
+
+def test_xml_verify_video_does_not_bypass_plausibility_checks():
+    r = make_runner()
+    r.config.xml_verify_video = True
+    r.config.video_verify_tol = 0.0
+    r.config.output_profile = "FULL"
+    r.config.duration_output = "HMS"
+    r.config.skip_short_clips = False
+    r.config.run_preset = "FAST_PRECISE"
+    r.config.debug = False
+    r.cancel_event = Obj(is_set=lambda: False)
+    r.rows = []
+    r.output_columns = build_output_columns("FULL", "HMS", include_audit=True)
+    r.mtx = nullcontext()
+    r.metrics = {"rows_created": 0, "jobs_done": 0}
+    r.detect_hdr_robusto = lambda *args, **kwargs: "SDR"
+    r.find_part_info_from_bundle = lambda *args, **kwargs: ({"media": {}, "part": {}, "streams": []}, "xml_part_id") if kwargs.get("return_source") else {"media": {}, "part": {}, "streams": []}
+    r.detect_resolution = lambda **kwargs: ("1080p", "stream_height")
+    r.robust_duration_ms = lambda *args, **kwargs: 1000
+    r.compute_bitrates_and_size = lambda *args, **kwargs: (8.0, "calc", None, 7.0, 0.5, 0.0, 1000, 1.0, None, 0.5, 0, 1, 8.0, 0.2, "", "estimated")
+    r.fetch_video_bitrate_via_xml = lambda *args, **kwargs: 20.0
+    r.get_show_meta_for_episode = lambda item: None
+    r.get_ids_rating_from_xml = lambda item: (None, None, None)
+    r.get_ids_and_rating = lambda item: (None, None, None)
+    r.get_genres_from_xml = lambda item: ""
+    r.get_genres_from_entity = lambda item: ""
+    r.get_audio_streams = lambda *args, **kwargs: []
+    r.pick_best_audio_it_en = lambda *args, **kwargs: ((None, ""), (None, ""))
+    r.get_series_title_for_episode = lambda item: ""
+    item = Obj(ratingKey="1", title="Movie", year=2020, addedAt=None, type="movie")
+    media = Obj(videoCodec="h264", id="10")
+    part = Obj(container="mkv", file="/v.mkv", id="20")
+    InventoryRunner.add_row_from_part(r, item, media, part, "Movie")
+    assert r.rows
+    row = r.rows[0]
+    assert row["bitrate_mbps_video_final"] != 20.0

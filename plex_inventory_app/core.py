@@ -1519,6 +1519,7 @@ class InventoryRunner:
         sec_video_sum = 0.0
         v_streams = self.get_video_streams(item, part)
         primary = self.select_primary_video_stream(v_streams)
+        primary_direct_bitrate_mbps = self.kbps_to_mbps(self.get_attr(primary, "bitrate", None)) if primary is not None and self.get_attr(primary, "bitrate", None) else None
         pv = self.stream_bitrate_mbps(primary)
         if pv and pv > 0:
             v_mbps = pv
@@ -1541,7 +1542,7 @@ class InventoryRunner:
 
         video_source = "missing"
         if pv and pv > 0:
-            video_source = "stream_xml"
+            video_source = "stream_xml" if (primary_direct_bitrate_mbps and primary_direct_bitrate_mbps > 0) else "stream_requiredBandwidths"
         elif primary and self.parse_required_bandwidths_first_mbps(self.get_attr(primary, "requiredBandwidths", None)):
             video_source = "stream_requiredBandwidths"
         if self.config.fast_mode and (v_mbps is None or v_mbps <= 0) and part_match_source not in {"xml_ambiguous", "xml_missing"}:

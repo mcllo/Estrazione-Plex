@@ -17,7 +17,7 @@ def make_runner():
     r.metrics = {"duration_cache_hit": 0}
     r.get_attr = InventoryRunner.get_attr
     r.get_int = InventoryRunner.get_int.__get__(r, InventoryRunner)
-    r.parse_required_bandwidths_first_mbps = InventoryRunner.parse_required_bandwidths_first_mbps.__get__(r, InventoryRunner)
+    r.parse_required_bandwidths_first_mbps = InventoryRunner.parse_required_bandwidths_first_mbps
     r.kbps_to_mbps = InventoryRunner.kbps_to_mbps.__get__(r, InventoryRunner)
     r.stream_bitrate_mbps = InventoryRunner.stream_bitrate_mbps.__get__(r, InventoryRunner)
     r.compute_overhead_mbps = InventoryRunner.compute_overhead_mbps.__get__(r, InventoryRunner)
@@ -120,3 +120,17 @@ def test_xml_verify_video_does_not_bypass_plausibility_checks():
     assert r.rows
     row = r.rows[0]
     assert row["bitrate_mbps_video_final"] != 20.0
+
+
+def test_video_source_required_bandwidths_when_no_direct_bitrate():
+    r = make_runner()
+    r.media_total_mbps_via_xml = lambda *args, **kwargs: None
+    st = Obj(streamType=1, bitrate=None, requiredBandwidths="5500,4000", height=1080)
+    r.get_video_streams = lambda i, p: [st]
+    r.get_audio_streams = lambda i, p: []
+    r.get_subtitle_streams = lambda i, p: []
+    out = InventoryRunner.compute_bitrates_and_size(
+        r, Obj(), Obj(), Obj(size=5_000_000, container="mkv"), 5000,
+        xml_info=None, part_match_source="xml_missing", resolution="1080p"
+    )
+    assert out[-1] == "stream_requiredBandwidths"

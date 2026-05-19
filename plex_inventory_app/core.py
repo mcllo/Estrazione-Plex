@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import ipaddress
 import json
 import os
+import math
 import pathlib
 import re
 import threading
@@ -315,7 +316,7 @@ def with_timestamp(path_str: str, fmt: str = TIMESTAMP_FMT, tz=TZ_MILAN) -> str:
 def build_output_columns(output_profile: str, duration_output: str, include_audit: bool = False) -> list[str]:
     full = [
         "type", "title_or_series", "season", "episode", "episode_title", "year",
-        "added_at_milan", "resolution", "hdr", "videoCodec", "container",
+        "added_at_milan", "resolution", "resolution_p_equiv", "hdr", "videoCodec", "container",
         "bitrate_mbps_total", "bitrate_total_source", "bitrate_mbps_video",
         "bitrate_mbps_video_est", "bitrate_mbps_video_final",
         "audio_bitrate_total_mbps_raw", "secondary_video_mbps_raw", "container_overhead_mbps_raw",
@@ -325,7 +326,7 @@ def build_output_columns(output_profile: str, duration_output: str, include_audi
     ]
     slim = [
         "type", "title_or_series", "season", "episode", "episode_title", "year",
-        "added_at_milan", "resolution", "hdr", "videoCodec", "container",
+        "added_at_milan", "resolution", "resolution_p_equiv", "hdr", "videoCodec", "container",
         "bitrate_mbps_total", "bitrate_mbps_video",
         "audio_it_bitrate_mbps", "audio_it_quality", "audio_en_bitrate_mbps", "audio_en_quality",
         "size_gib", "imdb_id", "imdb_rating", "tmdb_id", "rating_key", "genres", "file",
@@ -333,11 +334,13 @@ def build_output_columns(output_profile: str, duration_output: str, include_audi
     if include_audit:
         full += [
             "media_id", "part_id", "part_match_source", "resolution_source", "duration_source",
+            "video_width", "video_height", "resolution_p_equiv_source",
             "bitrate_total_calc_mbps", "bitrate_total_xml_mbps", "bitrate_total_xml_rejected_reason",
             "bitrate_video_source",
         ]
     target = full if output_profile == "FULL" else slim + ([
         "media_id", "part_id", "part_match_source", "resolution_source", "duration_source",
+        "video_width", "video_height", "resolution_p_equiv_source",
         "bitrate_total_source", "bitrate_total_calc_mbps", "bitrate_total_xml_mbps", "bitrate_total_xml_rejected_reason",
         "bitrate_video_source",
     ] if include_audit and output_profile != "FULL" else [])
@@ -637,6 +640,23 @@ class InventoryRunner:
             return "SD", "media_height"
         nr = self.norm_res(media)
         return (nr, "media_videoResolution") if nr else ("", "unknown")
+
+    def compute_resolution_p_equiv(self, item=None, media=None, part=None):
+        try:
+            v_streams = self.get_video_streams(item, part) if (item is not None and part is not None) else []
+        except Exception:
+            v_streams = []
+        primary = self.select_primary_video_stream(v_streams)
+        w = self.get_int(primary, "width", None) or self.get_int(primary, "codedWidth", None)
+        h = self.get_int(primary, "height", None) or self.get_int(primary, "codedHeight", None)
+        source = "stream_dimensions"
+        if not (w and h and w > 0 and h > 0):
+            w = self.get_int(media, "width", None)
+            h = self.get_int(media, "height", None)
+            source = "media_dimensions"
+        if not (w and h and w > 0 and h > 0):
+            return None, None, None, "missing"
+        return int(round(math.sqrt((w * h * 9) / 16))), w, h, source
 
     @staticmethod
     def kbps_to_mbps(x):
@@ -1707,6 +1727,7 @@ class InventoryRunner:
             "year": year,
             "added_at_milan": added_at_str,
             "resolution": res,
+            "resolution_p_equiv": None,
             "hdr": hdr,
             "videoCodec": vcodec,
             "container": container,
@@ -1738,11 +1759,19 @@ class InventoryRunner:
             "part_match_source": part_match_source,
             "resolution_source": resolution_source,
             "duration_source": self.duration_source_cache.get(getattr(part, "file", None), "missing"),
+            "video_width": None,
+            "video_height": None,
+            "resolution_p_equiv_source": "missing",
             "bitrate_total_calc_mbps": round(total_calc_mbps, 3) if total_calc_mbps is not None else None,
             "bitrate_total_xml_mbps": round(total_xml_mbps, 3) if total_xml_mbps is not None else None,
             "bitrate_total_xml_rejected_reason": total_xml_rej_reason or "",
             "bitrate_video_source": bitrate_video_source,
         }
+        res_p, video_w, video_h, res_p_source = self.compute_resolution_p_equiv(item=item, media=media, part=part)
+        full_row["resolution_p_equiv"] = res_p
+        full_row["video_width"] = video_w
+        full_row["video_height"] = video_h
+        full_row["resolution_p_equiv_source"] = res_p_source
         row = {k: full_row.get(k, None) for k in self.output_columns}
         with self.mtx:
             self.rows.append(row)

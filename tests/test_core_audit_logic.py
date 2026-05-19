@@ -43,6 +43,26 @@ def test_resolution_prefers_stream_height():
     assert src == "stream_height"
 
 
+def test_resolution_p_equiv_values_from_stream_dimensions():
+    r = make_runner()
+    cases = [
+        ((1280, 720), 720),
+        ((1920, 1080), 1080),
+        ((1920, 960), 1018),
+        ((1920, 800), 930),
+        ((3840, 2160), 2160),
+        ((3840, 1600), 1859),
+    ]
+    for (w, h), expected in cases:
+        st = Obj(streamType=1, width=w, height=h)
+        r.get_video_streams = lambda item, part, st=st: [st]
+        out, vw, vh, src = InventoryRunner.compute_resolution_p_equiv(r, item=Obj(), media=Obj(), part=Obj())
+        assert out == expected
+        assert vw == w
+        assert vh == h
+        assert src == "stream_dimensions"
+
+
 def test_duration_prefers_secure_xml():
     r = make_runner()
     item = Obj(type="movie", duration=6502000)
